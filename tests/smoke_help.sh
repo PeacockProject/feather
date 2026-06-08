@@ -4,7 +4,8 @@
 # Verifies:
 #   1. --help exits 0 and stdout lists every subcommand
 #   2. --version matches FTR_VERSION
-#   3. `ftr install` (no args) prints "not implemented yet" and exits 0
+#   3. `ftr install --help` exits 0 and prints usage (subcommand
+#      dispatch works for the most-used cmd)
 #   4. `ftr nonexistent-cmd` errors to stderr listing valid commands
 #      and exits 1
 #
@@ -54,14 +55,14 @@ if ! printf '%s\n' "$ver_out" | grep -qw "$EXPECTED_VERSION"; then
 fi
 
 # ----------------------------------------------------------------
-# 3. `ftr install` prints "not implemented yet" and exits 0
+# 3. `ftr install --help` exits 0 with a usage line
 # ----------------------------------------------------------------
-inst_err=$("$FTR" install 2>&1 1>/dev/null) || {
+inst_out=$("$FTR" install --help) || {
 	rc=$?
-	fail "install exited $rc, expected 0"
+	fail "install --help exited $rc, expected 0"
 }
-if ! printf '%s\n' "$inst_err" | grep -q "not implemented yet"; then
-	fail "install stderr missing 'not implemented yet': $inst_err"
+if ! printf '%s\n' "$inst_out" | grep -q "Usage: ftr install"; then
+	fail "install --help missing 'Usage: ftr install': $inst_out"
 fi
 
 # ----------------------------------------------------------------
