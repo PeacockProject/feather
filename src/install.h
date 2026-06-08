@@ -20,8 +20,6 @@
 #ifndef FTR_INSTALL_H
 #define FTR_INSTALL_H
 
-#include "manifest.h"
-
 typedef struct {
 	/* Override the install prefix for each layout. NULL = use the
 	 * layout's default (e.g. "/peacock" for peacock). Tests set
