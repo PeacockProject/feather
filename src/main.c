@@ -49,6 +49,16 @@ void err_die(int code, const char *fmt, ...)
 	exit(code);
 }
 
+void err_log(const char *fmt, ...)
+{
+	va_list ap;
+	fputs("ftr: error: ", stderr);
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	fputc('\n', stderr);
+}
+
 void info_log(const char *fmt, ...)
 {
 	va_list ap;

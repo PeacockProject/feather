@@ -40,6 +40,9 @@
 /* Print "ftr: error: <fmt>" to stderr and exit with `code`. */
 void err_die(int code, const char *fmt, ...);
 
+/* Print "ftr: error: <fmt>" to stderr. Does not exit. */
+void err_log(const char *fmt, ...);
+
 /* Print "ftr: <fmt>" to stderr. Does not exit. */
 void info_log(const char *fmt, ...);
 

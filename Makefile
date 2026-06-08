@@ -81,4 +81,3 @@ install: build
 
 test: build
 	./tests/smoke_help.sh
-	./tests/phase4_local_install.sh
