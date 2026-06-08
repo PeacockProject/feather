@@ -1,26 +1,30 @@
 /*
- * repo.h — repository config + index reader + file:// fetch.
+ * repo.h — repository config + index reader + transport.
  *
- * Phase 4b (post-baseline phase 4): feather grows a tiny repo client
- * sufficient to serve packages out of a local directory. URL schemes
- * other than `file://` are stubbed with a phase-6 message — they don't
- * fail the call, they just skip the entry.
+ * Phase 6 adds HTTPS via curl; phase 4b's file:// path stays as-is.
+ * Anything other than `file://` / `https://` (and `http://` which
+ * curl also accepts) is rejected with a clear error rather than
+ * silently skipped.
  *
  * Repo layout on disk:
  *
  *   <repo-root>/
- *   ├── index.toml                  metadata + package list
- *   └── <name>-<version>.feather    one or more package archives
+ *   ├── index.toml                       metadata + package list
+ *   ├── index.toml.sig                   minisign signature of the above
+ *   ├── <name>-<version>.feather         one or more package archives
+ *   └── <name>-<version>.feather.sig     minisign signature per archive
  *
  * /etc/feather/feather.conf format:
  *
  *   [[repos]]
- *   name = "peacock-stable"
- *   url  = "file:///srv/peacock/repo"
+ *   name   = "peacock-stable"
+ *   url    = "https://repo.peacock-project.dev/stable"
+ *   pubkey = "/etc/feather/keys/peacock-stable.pub"  # optional
  *
- * After `ftr sync`, the index lands at:
+ * After `ftr sync`, the index + its signature land at:
  *
  *   $FTR_DB_ROOT/sync/<repo-name>/index.toml
+ *   $FTR_DB_ROOT/sync/<repo-name>/index.toml.sig
  */
 
 #ifndef FTR_REPO_H
@@ -32,6 +36,7 @@
 typedef struct {
 	char *name;
 	char *url;
+	char *pubkey;   /* optional per-repo minisign pubkey file path; NULL = default */
 } ftr_repo_cfg;
 
 typedef struct {
@@ -87,12 +92,25 @@ int ftr_repo_load_all_synced(ftr_repo_index **out_arr, size_t *n_out);
 
 void ftr_repo_indexes_free(ftr_repo_index *arr, size_t n);
 
-/* Copy a file from `src_url` to `dst_path`. Supports `file://` URLs
- * only; for other schemes, sets *skipped to 1 (with a phase-6
- * stdout/stderr line) and returns 0 without writing anything.
- * Returns 0 on success, -1 on hard I/O error. */
+/* Copy a file from `src_url` to `dst_path`.
+ *
+ * Supported schemes:
+ *   file://    direct copy (no network)
+ *   http://    via host curl(1)
+ *   https://   via host curl(1)
+ *
+ * `*skipped` is always written; phase 6 keeps it as a vestigial flag
+ * for callers that wanted "missing optional file" semantics —
+ * specifically, `optional` lets the caller declare that ENOENT-style
+ * remote 404 is acceptable. When set, missing-remote/local returns 0
+ * with *skipped=1; otherwise it returns -1.
+ *
+ * On hard I/O / network error returns -1 and (when errbuf != NULL)
+ * populates errbuf with the underlying tool's diagnostic.
+ */
 int ftr_repo_fetch(const char *src_url, const char *dst_path,
-                   int *skipped);
+                   int optional, int *skipped,
+                   char *errbuf, size_t errbufsz);
 
 /* Strip a leading "file://" from `url`. Returns a pointer into `url`
  * (no allocation) if the prefix is present; otherwise returns NULL. */
@@ -100,5 +118,12 @@ const char *ftr_repo_file_url_path(const char *url);
 
 /* True if `url` begins with `file://`. */
 int ftr_repo_is_file_url(const char *url);
+
+/* True if `url` begins with `http://` or `https://`. */
+int ftr_repo_is_http_url(const char *url);
+
+/* Probe for curl(1) in PATH. Result is cached after first call.
+ * Returns 1 if found, 0 if absent. */
+int ftr_repo_have_curl(void);
 
 #endif /* FTR_REPO_H */

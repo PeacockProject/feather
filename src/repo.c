@@ -1,13 +1,12 @@
 /*
- * repo.c — repository config + index reader + file:// fetch.
+ * repo.c — repository config + index reader + transport.
  *
  * Uses the vendored tomlc99 parser for both feather.conf and per-repo
- * index.toml. File transfers are byte-copy through the existing
- * copy_file() helper — no libcurl, no network code in this phase.
- *
- * URL handling is deliberately minimalist: anything that isn't
- * `file://` prints a one-line "phase 6 will add this" diagnostic and
- * is skipped rather than failing the whole call. Sync is best-effort.
+ * index.toml. File transfers go through either the existing
+ * copy_file() helper (file:// URLs) or a fork+exec curl(1) call
+ * (http(s)://). curl is detected once at first need and the result is
+ * cached for the rest of the run; deliberately no libcurl link, to
+ * preserve `ftr`'s static-binary promise without dragging in libssl.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -16,12 +15,15 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "common.h"
 #include "db.h"
@@ -51,12 +53,68 @@ int ftr_repo_is_file_url(const char *url)
 	return url && strncmp(url, "file://", 7) == 0;
 }
 
+int ftr_repo_is_http_url(const char *url)
+{
+	if (!url) {
+		return 0;
+	}
+	return strncmp(url, "http://", 7) == 0 ||
+	       strncmp(url, "https://", 8) == 0;
+}
+
 const char *ftr_repo_file_url_path(const char *url)
 {
 	if (!ftr_repo_is_file_url(url)) {
 		return NULL;
 	}
 	return url + 7;
+}
+
+/* ---------------------------------------------------------------- *
+ * curl detection — looked up once per `ftr` invocation.
+ *
+ * State values:
+ *   -1  not yet probed
+ *    0  not found in PATH
+ *    1  found
+ * ---------------------------------------------------------------- */
+
+static int g_curl_state = -1;
+
+static int find_in_path(const char *name)
+{
+	const char *path = getenv("PATH");
+	const char *p;
+	char buf[4096];
+	if (!path || !*path) {
+		return 0;
+	}
+	p = path;
+	while (*p) {
+		const char *colon = strchr(p, ':');
+		size_t seglen = colon ? (size_t)(colon - p) : strlen(p);
+		if (seglen > 0 && seglen + 1 + strlen(name) + 1 <= sizeof(buf)) {
+			memcpy(buf, p, seglen);
+			buf[seglen] = '/';
+			memcpy(buf + seglen + 1, name, strlen(name) + 1);
+			if (access(buf, X_OK) == 0) {
+				return 1;
+			}
+		}
+		if (!colon) {
+			break;
+		}
+		p = colon + 1;
+	}
+	return 0;
+}
+
+int ftr_repo_have_curl(void)
+{
+	if (g_curl_state < 0) {
+		g_curl_state = find_in_path("curl") ? 1 : 0;
+	}
+	return g_curl_state;
 }
 
 /* ---------------------------------------------------------------- *
@@ -84,6 +142,7 @@ void ftr_repo_list_free(ftr_repo_list *l)
 	for (i = 0; i < l->n; i++) {
 		free(l->items[i].name);
 		free(l->items[i].url);
+		free(l->items[i].pubkey);
 	}
 	free(l->items);
 	l->items = NULL;
@@ -152,6 +211,12 @@ int ftr_repo_load_config(ftr_repo_list *out, char *errbuf, size_t errbufsz)
 		}
 		out->items[i].name = name_d.u.s;
 		out->items[i].url  = url_d.u.s;
+		{
+			toml_datum_t pk_d = toml_string_in(t, "pubkey");
+			if (pk_d.ok) {
+				out->items[i].pubkey = pk_d.u.s;
+			}
+		}
 		out->n++;
 	}
 
@@ -384,29 +449,194 @@ int ftr_repo_load_all_synced(ftr_repo_index **out_arr, size_t *n_out)
  * fetch
  * ---------------------------------------------------------------- */
 
-int ftr_repo_fetch(const char *src_url, const char *dst_path, int *skipped)
+/* ---------------------------------------------------------------- *
+ * curl HTTPS fetch
+ *
+ * Fork+exec curl with --fail / --silent / --location / --retry 3 so
+ * we get a non-zero exit on 4xx/5xx and reasonable retry behavior on
+ * transient errors. Stderr is captured through a pipe and surfaced in
+ * `errbuf` on failure so the user can see what curl complained about
+ * (DNS, TLS, 404, ...) without having to re-run with `--verbose`.
+ *
+ * When `optional` is set, a 404 / missing-file outcome is silently
+ * mapped to *skipped = 1 + return 0; callers use this for the
+ * .sig sidecar lookup so a repo that hasn't been signed yet doesn't
+ * fail sync hard.
+ * ---------------------------------------------------------------- */
+
+static int curl_fetch_https(const char *url, const char *out_path,
+                            int optional, int *skipped,
+                            char *errbuf, size_t errbufsz)
+{
+	int err_pipe[2];
+	pid_t pid;
+	int status;
+	char *stderr_buf = NULL;
+	size_t stderr_cap = 4096;
+	size_t stderr_len = 0;
+
+	if (!ftr_repo_have_curl()) {
+		set_err(errbuf, errbufsz,
+		        "curl not found in PATH; install curl "
+		        "(host: apk add curl / pacman -S curl / "
+		        "apt install curl)");
+		return -1;
+	}
+
+	if (pipe(err_pipe) != 0) {
+		set_err(errbuf, errbufsz, "pipe(): %s", strerror(errno));
+		return -1;
+	}
+
+	pid = fork();
+	if (pid < 0) {
+		close(err_pipe[0]);
+		close(err_pipe[1]);
+		set_err(errbuf, errbufsz, "fork(): %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		/* child: re-wire stderr to the pipe, drop stdin/stdout
+		 * to /dev/null. */
+		int devnull;
+		close(err_pipe[0]);
+		dup2(err_pipe[1], STDERR_FILENO);
+		close(err_pipe[1]);
+		devnull = open("/dev/null", O_RDWR);
+		if (devnull >= 0) {
+			dup2(devnull, STDIN_FILENO);
+			dup2(devnull, STDOUT_FILENO);
+			if (devnull > 2) {
+				close(devnull);
+			}
+		}
+		execlp("curl", "curl",
+		       "-fsSL",
+		       "--retry", "3",
+		       "--retry-delay", "2",
+		       "-o", out_path,
+		       url,
+		       (char *)NULL);
+		_exit(127);
+	}
+
+	/* parent: drain stderr, then wait. */
+	close(err_pipe[1]);
+	stderr_buf = malloc(stderr_cap);
+	if (stderr_buf) {
+		for (;;) {
+			ssize_t n;
+			if (stderr_len + 1024 >= stderr_cap) {
+				size_t nc = stderr_cap * 2;
+				char *tmp = realloc(stderr_buf, nc);
+				if (!tmp) {
+					break;
+				}
+				stderr_buf = tmp;
+				stderr_cap = nc;
+			}
+			n = read(err_pipe[0],
+			         stderr_buf + stderr_len,
+			         stderr_cap - stderr_len - 1);
+			if (n <= 0) {
+				if (n < 0 && errno == EINTR) {
+					continue;
+				}
+				break;
+			}
+			stderr_len += (size_t)n;
+		}
+		stderr_buf[stderr_len] = '\0';
+	}
+	close(err_pipe[0]);
+
+	while (waitpid(pid, &status, 0) < 0) {
+		if (errno != EINTR) {
+			free(stderr_buf);
+			set_err(errbuf, errbufsz, "waitpid(): %s",
+			        strerror(errno));
+			return -1;
+		}
+	}
+
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+		free(stderr_buf);
+		return 0;
+	}
+
+	/* curl exit 22 = HTTP error (with --fail). For optional
+	 * fetches treat that as "absent" rather than hard failure. */
+	if (optional && WIFEXITED(status) && WEXITSTATUS(status) == 22) {
+		(void)unlink(out_path); /* curl leaves partial files */
+		if (skipped) {
+			*skipped = 1;
+		}
+		free(stderr_buf);
+		return 0;
+	}
+
+	{
+		const char *tail = stderr_buf ? stderr_buf : "";
+		/* trim trailing whitespace for the error line */
+		size_t tlen = strlen(tail);
+		while (tlen > 0 &&
+		       (tail[tlen - 1] == '\n' || tail[tlen - 1] == '\r' ||
+		        tail[tlen - 1] == ' '  || tail[tlen - 1] == '\t')) {
+			tlen--;
+		}
+		set_err(errbuf, errbufsz,
+		        "curl: exit %d fetching '%s'%s%.*s",
+		        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+		        url,
+		        tlen ? ": " : "",
+		        (int)tlen, tail);
+	}
+	(void)unlink(out_path);
+	free(stderr_buf);
+	return -1;
+}
+
+int ftr_repo_fetch(const char *src_url, const char *dst_path,
+                   int optional, int *skipped,
+                   char *errbuf, size_t errbufsz)
 {
 	if (skipped) {
 		*skipped = 0;
 	}
-	if (!ftr_repo_is_file_url(src_url)) {
-		info_log("repo: skipping '%s' — scheme not yet supported "
-		         "(phase 6 will add https)", src_url);
-		if (skipped) {
-			*skipped = 1;
-		}
-		return 0;
+	if (!src_url || !*src_url) {
+		set_err(errbuf, errbufsz, "empty URL");
+		return -1;
 	}
-	{
+
+	if (ftr_repo_is_file_url(src_url)) {
 		const char *src = ftr_repo_file_url_path(src_url);
 		if (!src) {
+			set_err(errbuf, errbufsz,
+			        "malformed file:// URL '%s'", src_url);
 			return -1;
 		}
 		if (copy_file(src, dst_path) != 0) {
-			err_log("repo: cannot copy '%s' -> '%s': %s",
+			if (optional && errno == ENOENT) {
+				if (skipped) {
+					*skipped = 1;
+				}
+				return 0;
+			}
+			set_err(errbuf, errbufsz,
+			        "cannot copy '%s' -> '%s': %s",
 			        src, dst_path, strerror(errno));
 			return -1;
 		}
 		return 0;
 	}
+
+	if (ftr_repo_is_http_url(src_url)) {
+		return curl_fetch_https(src_url, dst_path, optional,
+		                        skipped, errbuf, errbufsz);
+	}
+
+	set_err(errbuf, errbufsz,
+	        "repo scheme not supported in URL '%s' (need file:// or "
+	        "http(s)://)", src_url);
+	return -1;
 }
