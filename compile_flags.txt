@@ -4,4 +4,3 @@
 -pedantic
 -Isrc
 -Isrc/vendor
--D_POSIX_C_SOURCE=200809L
