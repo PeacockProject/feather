@@ -42,6 +42,7 @@ SRC := \
 	src/manifest.c \
 	src/install.c \
 	src/db.c \
+	src/util.c \
 	src/repo.c \
 	src/verify.c
 
