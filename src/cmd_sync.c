@@ -2,12 +2,17 @@
  * cmd_sync.c — `ftr sync`
  *
  * Read /etc/feather/feather.conf (or $FTR_CONFIG) and for each
- * [[repos]] entry fetch <url>/index.toml into
- * $FTR_DB_ROOT/sync/<repo-name>/index.toml.
+ * [[repos]] entry fetch:
+ *   1. <url>/index.toml      → $FTR_DB_ROOT/sync/<name>/index.toml
+ *   2. <url>/index.toml.sig  → $FTR_DB_ROOT/sync/<name>/index.toml.sig
  *
- * Phase 4b: only file:// URLs are honoured; other schemes log a
- * one-line skip and don't fail the whole sync. Idempotent: re-running
- * just overwrites the local index.
+ * The index signature is verified against the repo's pubkey (per-repo
+ * override → $FTR_PUBKEY → built-in). On verify failure the previously
+ * synced index/sig pair is kept and a WARN line is printed; the user
+ * can still install whatever the old (good) index advertised.
+ *
+ * Supports file:// and http(s):// URLs. http(s) requires curl(1) in
+ * PATH; if absent, fail-fast with an actionable error.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -16,31 +21,60 @@
 #include "db.h"
 #include "repo.h"
 #include "util.h"
+#include "verify.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static void print_help(void)
 {
 	printf("Usage: ftr sync\n");
 	printf("\n");
 	printf("Refresh repository metadata. Reads %s\n", FTR_CONFIG);
-	printf("(or $FTR_CONFIG) and copies each repo's index.toml into\n");
-	printf("$FTR_DB_ROOT/sync/<repo-name>/index.toml.\n");
+	printf("(or $FTR_CONFIG) and fetches each repo's index.toml +\n");
+	printf("index.toml.sig into $FTR_DB_ROOT/sync/<repo-name>/.\n");
 	printf("\n");
-	printf("Phase 4b supports file:// URLs only; other schemes are\n");
-	printf("skipped with a phase-6 note.\n");
+	printf("Supported URL schemes: file://, http://, https://.\n");
+	printf("The index signature is verified against the repo's pubkey\n");
+	printf("(per-repo override, $FTR_PUBKEY, or compile-time default).\n");
+	printf("On verify failure the previously synced index is kept.\n");
+}
+
+/* Build "<base>/<suffix>" into a freshly-malloc'd string. */
+static char *join_url(const char *base, const char *suffix)
+{
+	size_t len = strlen(base) + 1 + strlen(suffix) + 1;
+	char *u = malloc(len);
+	if (!u) {
+		return NULL;
+	}
+	(void)snprintf(u, len, "%s/%s", base, suffix);
+	return u;
 }
 
 static int sync_one(const ftr_repo_cfg *r)
 {
 	char *dst_dir = NULL;
-	char *dst_path = NULL;
-	char *src_url = NULL;
-	size_t url_len;
-	int skipped = 0;
+	char *idx_tmp = NULL;        /* index.toml staging path */
+	char *sig_tmp = NULL;        /* index.toml.sig staging path */
+	char *idx_final = NULL;
+	char *sig_final = NULL;
+	char *idx_url = NULL;
+	char *sig_url = NULL;
+	char err[512];
+	ftr_signature sig;
+	ftr_pubkey pk;
+	int skipped_sig = 0;
 	int rc = -1;
+	int have_old_index;
+
+	memset(&sig, 0, sizeof(sig));
+	memset(&pk, 0, sizeof(pk));
 
 	dst_dir = path_join(3, ftr_db_root(), "sync", r->name);
 	if (!dst_dir) {
@@ -51,40 +85,114 @@ static int sync_one(const ftr_repo_cfg *r)
 		err_log("sync: cannot create '%s'", dst_dir);
 		goto out;
 	}
-	dst_path = path_join(2, dst_dir, "index.toml");
-	if (!dst_path) {
+	idx_final = path_join(2, dst_dir, "index.toml");
+	sig_final = path_join(2, dst_dir, "index.toml.sig");
+	if (!idx_final || !sig_final) {
+		err_log("sync: out of memory");
+		goto out;
+	}
+	have_old_index = path_exists(idx_final);
+
+	/* Stage downloads next to the final paths so a half-fetched
+	 * index.toml never clobbers the previous good one. */
+	{
+		size_t n = strlen(idx_final) + strlen(".new") + 1;
+		idx_tmp = malloc(n);
+		if (!idx_tmp) {
+			err_log("sync: out of memory");
+			goto out;
+		}
+		(void)snprintf(idx_tmp, n, "%s.new", idx_final);
+		n = strlen(sig_final) + strlen(".new") + 1;
+		sig_tmp = malloc(n);
+		if (!sig_tmp) {
+			err_log("sync: out of memory");
+			goto out;
+		}
+		(void)snprintf(sig_tmp, n, "%s.new", sig_final);
+	}
+
+	idx_url = join_url(r->url, "index.toml");
+	sig_url = join_url(r->url, "index.toml.sig");
+	if (!idx_url || !sig_url) {
 		err_log("sync: out of memory");
 		goto out;
 	}
 
-	/* Build "<url>/index.toml". For file:// strip+rejoin so paths
-	 * stay clean; for other schemes we still hand the unmolested URL
-	 * to ftr_repo_fetch which will skip-and-log. */
-	url_len = strlen(r->url) + strlen("/index.toml") + 1;
-	src_url = malloc(url_len);
-	if (!src_url) {
-		err_log("sync: out of memory");
-		goto out;
-	}
-	(void)snprintf(src_url, url_len, "%s/index.toml", r->url);
-
-	if (ftr_repo_fetch(src_url, dst_path, &skipped) != 0) {
-		err_log("sync: failed to fetch '%s'", src_url);
-		goto out;
-	}
-	if (skipped) {
-		/* Non-file:// scheme — repo_fetch already logged a note. */
-		rc = 0;
+	/* Step 1: pull index. Hard failure if missing. */
+	if (ftr_repo_fetch(idx_url, idx_tmp, 0, NULL,
+	                   err, sizeof(err)) != 0) {
+		err_log("sync: %s", err);
 		goto out;
 	}
 
-	printf("synced: %s\n", r->name);
+	/* Step 2: pull sig. */
+	if (ftr_repo_fetch(sig_url, sig_tmp, 0, &skipped_sig,
+	                   err, sizeof(err)) != 0) {
+		err_log("sync: %s", err);
+		(void)unlink(idx_tmp);
+		goto out;
+	}
+
+	/* Step 3: load pubkey + verify sig. */
+	if (ftr_verify_resolve_pubkey(r->pubkey, &pk,
+	                              err, sizeof(err)) != 0) {
+		err_log("sync: cannot load pubkey for '%s': %s",
+		        r->name, err);
+		(void)unlink(idx_tmp);
+		(void)unlink(sig_tmp);
+		goto out;
+	}
+	if (ftr_verify_load_signature(sig_tmp, &sig,
+	                              err, sizeof(err)) != 0) {
+		fprintf(stderr,
+		        "WARN: sig verification failed for %s; "
+		        "keeping previous index (%s)\n",
+		        r->name, err);
+		(void)unlink(idx_tmp);
+		(void)unlink(sig_tmp);
+		rc = have_old_index ? 0 : -1;
+		goto out;
+	}
+	if (ftr_verify_archive(idx_tmp, &sig, &pk,
+	                       err, sizeof(err)) != 0) {
+		fprintf(stderr,
+		        "WARN: sig verification failed for %s; "
+		        "keeping previous index (%s)\n",
+		        r->name, err);
+		(void)unlink(idx_tmp);
+		(void)unlink(sig_tmp);
+		rc = have_old_index ? 0 : -1;
+		goto out;
+	}
+
+	/* Step 4: rename into place. */
+	if (rename(idx_tmp, idx_final) != 0) {
+		err_log("sync: rename '%s' -> '%s': %s",
+		        idx_tmp, idx_final, strerror(errno));
+		goto out;
+	}
+	if (rename(sig_tmp, sig_final) != 0) {
+		err_log("sync: rename '%s' -> '%s': %s",
+		        sig_tmp, sig_final, strerror(errno));
+		goto out;
+	}
+
+	{
+		char fp[17];
+		ftr_pubkey_fingerprint(&pk, fp);
+		printf("synced: %s (verified by %s)\n", r->name, fp);
+	}
 	rc = 0;
 
 out:
 	free(dst_dir);
-	free(dst_path);
-	free(src_url);
+	free(idx_tmp);
+	free(sig_tmp);
+	free(idx_final);
+	free(sig_final);
+	free(idx_url);
+	free(sig_url);
 	return rc;
 }
 
