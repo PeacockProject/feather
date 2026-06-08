@@ -41,4 +41,13 @@ int path_exists(const char *path);
 /* Is `path` a directory? Returns 1 yes, 0 no (incl. ENOENT). */
 int is_dir(const char *path);
 
+/* Compare two dotted version strings (e.g. "0.10.0" vs "0.2.0").
+ * Splits on '.' and compares each numeric segment; non-numeric
+ * components fall back to a strcmp on the segment. Returns
+ *   < 0 if a < b
+ *   = 0 if a == b
+ *   > 0 if a > b
+ */
+int version_compare(const char *a, const char *b);
+
 #endif /* FTR_UTIL_H */

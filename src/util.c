@@ -340,3 +340,76 @@ int is_dir(const char *path)
 	}
 	return S_ISDIR(st.st_mode) ? 1 : 0;
 }
+
+/* ---------------------------------------------------------------- *
+ * version_compare
+ * ---------------------------------------------------------------- */
+
+/* Read one '.'-separated segment from *pp, advance *pp past it (and
+ * its trailing dot if any). Writes the segment + NUL into `buf`
+ * (capped at `bufsz`). Returns 1 if a segment was read, 0 at end. */
+static int next_seg(const char **pp, char *buf, size_t bufsz)
+{
+	const char *p = *pp;
+	size_t i = 0;
+	if (!*p) {
+		return 0;
+	}
+	while (*p && *p != '.' && i + 1 < bufsz) {
+		buf[i++] = *p++;
+	}
+	while (*p && *p != '.') {
+		p++; /* skip overlong tail */
+	}
+	buf[i] = '\0';
+	if (*p == '.') {
+		p++;
+	}
+	*pp = p;
+	return 1;
+}
+
+static int is_all_digits(const char *s)
+{
+	if (!*s) return 0;
+	for (; *s; s++) {
+		if (*s < '0' || *s > '9') return 0;
+	}
+	return 1;
+}
+
+int version_compare(const char *a, const char *b)
+{
+	const char *pa = a ? a : "";
+	const char *pb = b ? b : "";
+	char sa[64];
+	char sb[64];
+	int ha;
+	int hb;
+	for (;;) {
+		ha = next_seg(&pa, sa, sizeof(sa));
+		hb = next_seg(&pb, sb, sizeof(sb));
+		if (!ha && !hb) {
+			return 0;
+		}
+		if (!ha) {
+			/* a ran out first — shorter is smaller. */
+			return -1;
+		}
+		if (!hb) {
+			return 1;
+		}
+		if (is_all_digits(sa) && is_all_digits(sb)) {
+			long va = strtol(sa, NULL, 10);
+			long vb = strtol(sb, NULL, 10);
+			if (va != vb) {
+				return (va < vb) ? -1 : 1;
+			}
+		} else {
+			int c = strcmp(sa, sb);
+			if (c != 0) {
+				return c;
+			}
+		}
+	}
+}
