@@ -1,0 +1,7 @@
+-std=c99
+-Wall
+-Wextra
+-pedantic
+-Isrc
+-Isrc/vendor
+-D_POSIX_C_SOURCE=200809L
