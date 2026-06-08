@@ -1,0 +1,85 @@
+.\" ftr.1.in — man page placeholder for ftr(1).
+.\"
+.\" Phase 6 fills this in once real subcommand bodies land. For now
+.\" it documents the surface so packagers building from this skeleton
+.\" don't get confused.
+.\"
+.TH FTR 1 "@DATE@" "feather @VERSION@" "Peacock OS Manual"
+.SH NAME
+ftr \- Peacock OS package manager (feather)
+.SH SYNOPSIS
+.B ftr
+.RI < command >
+.RI [ options ]
+.br
+.B ftr
+.RB { \-\-help | \-\-version }
+.SH DESCRIPTION
+.B feather
+(invoked as
+.BR ftr )
+manages the Peacock OS platform layer, user apps, and runtime compat
+shims that sit on top of the base distro (Arch, Debian, Alpine, ...).
+The base distro's package manager continues to own
+.IR /usr ,
+.IR /etc ,
+.IR /var ,
+and
+.IR /home ;
+feather writes only within
+.IR /peacock ,
+.IR /apps ,
+.IR /compat ,
+.IR /data ,
+plus
+.I /etc/feather/
+and
+.IR /var/lib/feather/ .
+.SH COMMANDS
+.TP
+.B install
+Install one or more packages.
+.TP
+.B remove
+Remove an installed package.
+.TP
+.B sync
+Refresh repository metadata.
+.TP
+.B upgrade
+Upgrade installed packages.
+.TP
+.B search
+Search repositories for a package.
+.TP
+.B info
+Show package metadata.
+.TP
+.B list
+List installed packages.
+.TP
+.B files
+List files owned by an installed package.
+.TP
+.B flavor
+Report the active Peacock base flavor.
+.SH FILES
+.TP
+.I /etc/feather/feather.conf
+Main configuration file.
+.TP
+.I /var/lib/feather/local/
+Local install database.
+.TP
+.I /var/lib/feather/sync/
+Cached remote repository metadata.
+.TP
+.I /var/lib/feather/gpg/
+Trusted repository signing keys.
+.SH SEE ALSO
+.BR pacman (8),
+.BR apt (8),
+.BR apk (8)
+.SH BUGS
+This is the phase 2 skeleton. Every subcommand currently prints
+\(lqnot implemented yet\(rq and exits 0.

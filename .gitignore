@@ -1,0 +1,10 @@
+# Build artifacts
+ftr
+*.o
+src/*.o
+build/
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
