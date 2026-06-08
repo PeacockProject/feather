@@ -24,6 +24,7 @@
 #include "install.h"
 #include "repo.h"
 #include "util.h"
+#include "verify.h"
 #include "sha256.h"
 
 #include <errno.h>
@@ -47,10 +48,15 @@ static void print_help(void)
 	printf("  --apps-prefix <path>      override /apps prefix\n");
 	printf("  --compat-prefix <path>    override /compat prefix\n");
 	printf("  --data-prefix <path>      override /data prefix (phase 5)\n");
+	printf("  --allow-unsigned          local archives only: skip sig check\n");
 	printf("  -h, --help                show this help\n");
 	printf("\n");
-	printf("Note: repo packages install unsigned in phase 4 — signature\n");
-	printf("verification is added in phase 6.\n");
+	printf("Signature handling:\n");
+	printf("  - Repo packages: signature verification is mandatory.\n");
+	printf("  - Local archives with a sidecar .sig: verified.\n");
+	printf("  - Local archives without a .sig: installed with WARN.\n");
+	printf("  - --allow-unsigned bypasses verification for local installs\n");
+	printf("    only. It does not relax the repo path.\n");
 }
 
 /* Treat `arg` as a path (not a bare name) if it contains '/' or ends
@@ -103,16 +109,24 @@ int ftr_install_by_name(const char *name,
 	const ftr_pkg_index_entry *best;
 	ftr_repo_list cfg;
 	char cfg_err[256];
+	char err[512];
 	const char *src_repo_url = NULL;
+	const char *src_repo_pubkey = NULL;
 	char *src_url = NULL;
-	char tmpl[] = "/tmp/feather-fetch-XXXXXX";
+	char *sig_url = NULL;
+	char arch_tmpl[] = "/tmp/feather-fetch-XXXXXX";
+	char sig_tmpl[]  = "/tmp/feather-fetch-XXXXXX";
 	int tmp_fd = -1;
-	char *tmp_path = NULL;
+	char *arch_path = NULL;
+	char *sig_path = NULL;
+	ftr_signature sig;
+	ftr_pubkey pk;
 	size_t i;
-	int skipped = 0;
 	int rc = -1;
 
 	memset(&cfg, 0, sizeof(cfg));
+	memset(&sig, 0, sizeof(sig));
+	memset(&pk, 0, sizeof(pk));
 
 	if (ftr_repo_load_all_synced(&idxs, &n_idxs) != 0) {
 		err_log("install: cannot read synced repos");
@@ -129,8 +143,8 @@ int ftr_install_by_name(const char *name,
 		goto out;
 	}
 
-	/* Find this entry's repo URL from feather.conf so we know
-	 * where to fetch the archive from. */
+	/* Find this entry's repo URL + pubkey from feather.conf so we
+	 * know where to fetch the archive from and which key to trust. */
 	if (ftr_repo_load_config(&cfg, cfg_err, sizeof(cfg_err)) != 0) {
 		err_log("install: %s", cfg_err);
 		goto out;
@@ -138,6 +152,7 @@ int ftr_install_by_name(const char *name,
 	for (i = 0; i < cfg.n; i++) {
 		if (strcmp(cfg.items[i].name, best->repo_name) == 0) {
 			src_repo_url = cfg.items[i].url;
+			src_repo_pubkey = cfg.items[i].pubkey;
 			break;
 		}
 	}
@@ -147,7 +162,6 @@ int ftr_install_by_name(const char *name,
 		goto out;
 	}
 
-	/* "<url>/<archive>" */
 	{
 		size_t len = strlen(src_repo_url) + 1 + strlen(best->archive)
 		             + 1;
@@ -158,39 +172,59 @@ int ftr_install_by_name(const char *name,
 		}
 		(void)snprintf(src_url, len, "%s/%s",
 		               src_repo_url, best->archive);
+		sig_url = malloc(len + 4);
+		if (!sig_url) {
+			err_log("install: out of memory");
+			goto out;
+		}
+		(void)snprintf(sig_url, len + 4, "%s/%s.sig",
+		               src_repo_url, best->archive);
 	}
 
-	/* mkstemp gives us a unique file under /tmp. install_local
+	/* mkstemp gives us unique paths under /tmp. install_local
 	 * cares about contents, not the filename suffix. */
-	tmp_fd = mkstemp(tmpl);
+	tmp_fd = mkstemp(arch_tmpl);
 	if (tmp_fd < 0) {
 		err_log("install: mkstemp failed: %s", strerror(errno));
 		goto out;
 	}
 	close(tmp_fd);
 	tmp_fd = -1;
-	tmp_path = strdup(tmpl);
-	if (!tmp_path) {
+	arch_path = strdup(arch_tmpl);
+	if (!arch_path) {
 		err_log("install: out of memory");
-		(void)unlink(tmpl);
+		(void)unlink(arch_tmpl);
+		goto out;
+	}
+	tmp_fd = mkstemp(sig_tmpl);
+	if (tmp_fd < 0) {
+		err_log("install: mkstemp failed: %s", strerror(errno));
+		goto out;
+	}
+	close(tmp_fd);
+	tmp_fd = -1;
+	sig_path = strdup(sig_tmpl);
+	if (!sig_path) {
+		err_log("install: out of memory");
+		(void)unlink(sig_tmpl);
 		goto out;
 	}
 
-	if (ftr_repo_fetch(src_url, tmp_path, &skipped) != 0) {
-		err_log("install: fetch '%s' failed", src_url);
+	if (ftr_repo_fetch(src_url, arch_path, 0, NULL,
+	                   err, sizeof(err)) != 0) {
+		err_log("install: %s", err);
 		goto out;
 	}
-	if (skipped) {
-		/* Non-file:// scheme — repo_fetch already logged. */
-		err_log("install: cannot install '%s' from repo '%s': scheme "
-		        "not yet supported", name, best->repo_name);
+	if (ftr_repo_fetch(sig_url, sig_path, 0, NULL,
+	                   err, sizeof(err)) != 0) {
+		err_log("install: cannot fetch signature: %s", err);
 		goto out;
 	}
 
 	if (best->sha256 && *best->sha256) {
 		char hex[65];
-		if (sha256_file_hex(tmp_path, hex) != 0) {
-			err_log("install: cannot hash '%s'", tmp_path);
+		if (sha256_file_hex(arch_path, hex) != 0) {
+			err_log("install: cannot hash '%s'", arch_path);
 			goto out;
 		}
 		if (strcmp(hex, best->sha256) != 0) {
@@ -201,21 +235,70 @@ int ftr_install_by_name(const char *name,
 		}
 	}
 
-	if (ftr_install_local(tmp_path, opts) != 0) {
+	if (ftr_verify_resolve_pubkey(src_repo_pubkey, &pk,
+	                              err, sizeof(err)) != 0) {
+		err_log("install: cannot load pubkey for repo '%s': %s",
+		        best->repo_name, err);
 		goto out;
 	}
-	printf("installed: %s-%s (unsigned, phase 6 will sign)\n",
-	       best->name, best->version);
+	if (ftr_verify_load_signature(sig_path, &sig,
+	                              err, sizeof(err)) != 0) {
+		err_log("install: %s-%s: %s",
+		        best->name, best->version, err);
+		goto out;
+	}
+	if (ftr_verify_archive(arch_path, &sig, &pk,
+	                       err, sizeof(err)) != 0) {
+		char fp[17];
+		char hex[65];
+		ftr_pubkey_fingerprint(&pk, fp);
+		if (sha256_file_hex(arch_path, hex) != 0) {
+			(void)snprintf(hex, sizeof(hex), "(hash unavailable)");
+		}
+		err_log("install: signature verify failed for %s-%s: %s",
+		        best->name, best->version, err);
+		err_log("install: signer key fingerprint: %s", fp);
+		err_log("install: computed sha256: %s "
+		        "(index claims: %s)",
+		        hex,
+		        (best->sha256 && *best->sha256)
+		            ? best->sha256 : "(none)");
+		goto out;
+	}
+
+	{
+		ftr_install_opts internal_opts;
+		if (opts) {
+			internal_opts = *opts;
+		} else {
+			memset(&internal_opts, 0, sizeof(internal_opts));
+		}
+		internal_opts._signature_already_verified = 1;
+		if (ftr_install_local(arch_path, &internal_opts) != 0) {
+			goto out;
+		}
+	}
+	{
+		char fp[17];
+		ftr_pubkey_fingerprint(&pk, fp);
+		printf("installed: %s-%s (verified by %s)\n",
+		       best->name, best->version, fp);
+	}
 	rc = 0;
 
 out:
-	if (tmp_path) {
-		(void)unlink(tmp_path);
-		free(tmp_path);
+	if (arch_path) {
+		(void)unlink(arch_path);
+		free(arch_path);
+	}
+	if (sig_path) {
+		(void)unlink(sig_path);
+		free(sig_path);
 	}
 	ftr_repo_list_free(&cfg);
 	ftr_repo_indexes_free(idxs, n_idxs);
 	free(src_url);
+	free(sig_url);
 	return rc;
 }
 
@@ -262,6 +345,8 @@ int cmd_install(int argc, char **argv)
 				return 2;
 			}
 			opts.data_prefix = argv[i];
+		} else if (strcmp(a, "--allow-unsigned") == 0) {
+			opts.allow_unsigned = 1;
 		} else if (a[0] == '-' && a[1] != '\0') {
 			err_log("install: unknown option '%s'", a);
 			return 2;
