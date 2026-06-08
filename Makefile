@@ -47,6 +47,14 @@ SRC := \
 
 OBJ := $(SRC:.c=.o)
 
+# Vendored single-file TOML parser. Kept byte-identical to upstream,
+# so we compile it through its own rule rather than the generic
+# src/%.o rule. It happens to be clean under -Wall -Wextra -Werror
+# -pedantic today, but we keep the carve-out so future upstream syncs
+# that trip a new warning can be waived here without polluting the
+# global CFLAGS for first-party code.
+VENDOR_OBJ := src/vendor/toml.o
+
 BIN := ftr
 
 .PHONY: all build clean install test
@@ -55,14 +63,17 @@ all: build
 
 build: $(BIN)
 
-$(BIN): $(OBJ)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)
+$(BIN): $(OBJ) $(VENDOR_OBJ)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ) $(VENDOR_OBJ)
 
 src/%.o: src/%.c
-	$(CC) $(CFLAGS) -Isrc -c -o $@ $<
+	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -c -o $@ $<
+
+src/vendor/toml.o: src/vendor/toml.c src/vendor/toml.h
+	$(CC) $(CFLAGS) -Isrc/vendor -c -o $@ $<
 
 clean:
-	rm -f $(BIN) *.o src/*.o
+	rm -f $(BIN) *.o src/*.o src/vendor/*.o
 
 install: build
 	install -d "$(DESTDIR)$(BINDIR)"
@@ -70,3 +81,4 @@ install: build
 
 test: build
 	./tests/smoke_help.sh
+	./tests/phase4_local_install.sh

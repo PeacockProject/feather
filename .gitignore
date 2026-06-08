@@ -2,6 +2,7 @@
 ftr
 *.o
 src/*.o
+src/vendor/*.o
 build/
 
 # Editor / OS
