@@ -39,4 +39,10 @@ typedef struct {
 int ftr_install_local(const char *archive_path,
                       const ftr_install_opts *opts);
 
+/* Install a package by name, resolving it against the synced repo
+ * indexes (highest version wins; first-listed repo wins on tie).
+ * Fetches + sha256-verifies + installs through ftr_install_local.
+ * Returns 0 on success, -1 on failure. */
+int ftr_install_by_name(const char *name, const ftr_install_opts *opts);
+
 #endif /* FTR_INSTALL_H */

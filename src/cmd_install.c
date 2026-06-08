@@ -95,8 +95,8 @@ static const ftr_pkg_index_entry *resolve_pkg(const ftr_repo_index *idxs,
 
 /* Resolve `name` from synced repos, fetch + verify + install. Returns
  * 0 on success, -1 on failure. */
-static int install_from_repo(const char *name,
-                             const ftr_install_opts *opts)
+int ftr_install_by_name(const char *name,
+                        const ftr_install_opts *opts)
 {
 	ftr_repo_index *idxs = NULL;
 	size_t n_idxs = 0;
@@ -278,7 +278,7 @@ int cmd_install(int argc, char **argv)
 				return 1;
 			}
 		} else {
-			if (install_from_repo(arg, &opts) != 0) {
+			if (ftr_install_by_name(arg, &opts) != 0) {
 				return 1;
 			}
 		}
