@@ -148,12 +148,25 @@ int ftr_db_record(const char *name, const char *version,
 		err_log("db: out of memory");
 		goto out;
 	}
-	/* If an entry already exists, wipe it — re-install semantics
-	 * for phase 4 are "blow away the prior record". */
-	if (rm_rf(dir) != 0) {
-		err_log("db: cannot clear stale entry '%s': %s",
-		        dir, strerror(errno));
-		goto out;
+	/* Re-install / upgrade semantics for phase 4: blow away every
+	 * prior entry for this package name (any version), not just the
+	 * matching (name, version) tuple. Phase 5 will model upgrades as
+	 * a proper transactional swap; here we keep one version per
+	 * name. */
+	{
+		char *existing_version = ftr_db_find_version(name);
+		while (existing_version) {
+			if (ftr_db_remove(name, existing_version) != 0) {
+				err_log("db: cannot clear stale entry "
+				        "%s-%s: %s",
+				        name, existing_version,
+				        strerror(errno));
+				free(existing_version);
+				goto out;
+			}
+			free(existing_version);
+			existing_version = ftr_db_find_version(name);
+		}
 	}
 	if (mkdir_p(dir, 0755) != 0) {
 		err_log("db: cannot create '%s': %s", dir, strerror(errno));
