@@ -160,35 +160,35 @@ if [ -n "$list_out" ]; then
 fi
 
 # ----------------------------------------------------------------
-# negative case: layout=app must be rejected
+# negative case: unknown layout must still be rejected
 # ----------------------------------------------------------------
-echo "phase4: --- layout=app rejection ---"
-STAGE_APP="$WORK/stage-app"
-mkdir -p "$STAGE_APP/files"
-cat >"$STAGE_APP/manifest.toml" <<'EOF'
+echo "phase4: --- unknown layout rejection ---"
+STAGE_SYS="$WORK/stage-sys"
+mkdir -p "$STAGE_SYS/files"
+cat >"$STAGE_SYS/manifest.toml" <<'EOF'
 [package]
-name = "com.example.notes"
+name = "sys-stub"
 version = "0.1.0"
 
 [install]
-layout = "app"
+layout = "system"
 EOF
-echo "placeholder" >"$STAGE_APP/files/placeholder"
-ARCHIVE_APP="$WORK/com.example.notes.feather"
-( cd "$STAGE_APP" && tar -czf "$ARCHIVE_APP" manifest.toml files )
+echo "placeholder" >"$STAGE_SYS/files/placeholder"
+ARCHIVE_SYS="$WORK/sys-stub.feather"
+( cd "$STAGE_SYS" && tar -czf "$ARCHIVE_SYS" manifest.toml files )
 
 set +e
-app_out=$("$FTR" install --peacock-prefix "$PREFIX_SANDBOX" \
-                         "$ARCHIVE_APP" 2>&1)
-app_rc=$?
+sys_out=$("$FTR" install --peacock-prefix "$PREFIX_SANDBOX" \
+                         "$ARCHIVE_SYS" 2>&1)
+sys_rc=$?
 set -e
 
-if [ "$app_rc" -eq 0 ]; then
-	fail "layout=app install should have failed, got rc=0: $app_out"
+if [ "$sys_rc" -eq 0 ]; then
+	fail "layout=system install should have failed, got rc=0: $sys_out"
 fi
-case "$app_out" in
+case "$sys_out" in
 	*"not yet supported in phase 4"*) ;;
-	*) fail "expected 'not yet supported in phase 4', got: $app_out" ;;
+	*) fail "expected 'not yet supported in phase 4', got: $sys_out" ;;
 esac
 
 echo "phase4_local_install.sh: PASS"

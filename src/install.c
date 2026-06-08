@@ -271,6 +271,7 @@ int ftr_install_local(const char *archive_path,
 	char *hooks_dir = NULL;
 	char *pre_hook = NULL;
 	char *post_hook = NULL;
+	char *resolved_prefix = NULL; /* heap copy for app/compat layouts */
 	ftr_manifest m;
 	char err[256];
 	const char *prefix;
@@ -322,23 +323,61 @@ int ftr_install_local(const char *archive_path,
 		goto out;
 	}
 
-	if (m.layout != FTR_LAYOUT_PEACOCK) {
+	/* Resolve the install prefix from manifest layout + CLI overrides.
+	 *
+	 *   peacock : <peacock-prefix>             (default /peacock)
+	 *   app     : <apps-prefix>/<package-name> (default /apps/<name>)
+	 *   compat  : <compat-prefix>/<runtime>    (default /compat/<runtime>)
+	 *
+	 * For app/compat we materialise a heap path; tracked in
+	 * resolved_prefix so out: frees it.
+	 */
+	prefix = NULL;
+	switch (m.layout) {
+	case FTR_LAYOUT_PEACOCK:
+		if (opts && opts->peacock_prefix) {
+			prefix = opts->peacock_prefix;
+		} else if (m.prefix && *m.prefix) {
+			prefix = m.prefix;
+		} else {
+			prefix = ftr_layout_default_prefix(FTR_LAYOUT_PEACOCK);
+		}
+		break;
+	case FTR_LAYOUT_APP: {
+		const char *base = (opts && opts->apps_prefix)
+		                   ? opts->apps_prefix
+		                   : ftr_layout_default_prefix(FTR_LAYOUT_APP);
+		resolved_prefix = path_join(2, base, m.name);
+		if (!resolved_prefix) {
+			err_log("install: out of memory");
+			goto out;
+		}
+		prefix = resolved_prefix;
+		break;
+	}
+	case FTR_LAYOUT_COMPAT: {
+		const char *base;
+		if (!m.runtime || !*m.runtime) {
+			err_log("install: layout=compat requires "
+			        "[package].runtime (package '%s')", m.name);
+			goto out;
+		}
+		base = (opts && opts->compat_prefix)
+		       ? opts->compat_prefix
+		       : ftr_layout_default_prefix(FTR_LAYOUT_COMPAT);
+		resolved_prefix = path_join(2, base, m.runtime);
+		if (!resolved_prefix) {
+			err_log("install: out of memory");
+			goto out;
+		}
+		prefix = resolved_prefix;
+		break;
+	}
+	default:
 		err_log("install: layout '%s' not yet supported in phase 4 "
 		        "(package '%s')",
 		        ftr_layout_name(m.layout), m.name);
 		goto out;
-	}
-
-	prefix = NULL;
-	if (m.prefix && *m.prefix) {
-		prefix = m.prefix;
-	}
-	if (opts && opts->peacock_prefix) {
-		/* CLI override beats the manifest's hint. */
-		prefix = opts->peacock_prefix;
-	}
-	if (!prefix) {
-		prefix = ftr_layout_default_prefix(FTR_LAYOUT_PEACOCK);
 	}
 
 	if (mkdir_p(prefix, 0755) != 0) {
@@ -390,6 +429,7 @@ out:
 	free(hooks_dir);
 	free(pre_hook);
 	free(post_hook);
+	free(resolved_prefix);
 	if (tmpdir) {
 		(void)rm_rf(tmpdir);
 		free(tmpdir);
