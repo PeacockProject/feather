@@ -44,7 +44,8 @@ SRC := \
 	src/db.c \
 	src/util.c \
 	src/repo.c \
-	src/verify.c
+	src/verify.c \
+	src/randombytes.c
 
 OBJ := $(SRC:.c=.o)
 
@@ -55,7 +56,15 @@ OBJ := $(SRC:.c=.o)
 # CFLAGS for first-party code.
 VENDOR_OBJ := \
 	src/vendor/toml.o \
-	src/vendor/sha256.o
+	src/vendor/sha256.o \
+	src/vendor/tweetnacl.o
+
+# Per-file warning waivers for TweetNaCl's 2014 snapshot. Two
+# diagnostics fire under our strict CFLAGS; both are stylistic and
+# scoped to the vendored code, never to first-party sources.
+TWEETNACL_WAIVERS := \
+	-Wno-sign-compare \
+	-Wno-unterminated-string-initialization
 
 BIN := ftr
 
@@ -77,14 +86,38 @@ src/vendor/toml.o: src/vendor/toml.c src/vendor/toml.h
 src/vendor/sha256.o: src/vendor/sha256.c src/vendor/sha256.h
 	$(CC) $(CFLAGS) -Isrc/vendor -c -o $@ $<
 
+src/vendor/tweetnacl.o: src/vendor/tweetnacl.c src/vendor/tweetnacl.h
+	$(CC) $(CFLAGS) $(TWEETNACL_WAIVERS) -Isrc/vendor -c -o $@ $<
+
+# --- auxiliary build artifacts ---------------------------------------------
+# tools/gen-keypair wraps TweetNaCl's crypto_sign_keypair() with a
+# deterministic, seed-driven randombytes() so tests can stamp out
+# reproducible minisign keypairs without depending on a system
+# `minisign` binary. tools/ftr-sign signs an arbitrary file with such
+# a keypair. Neither is part of the default build nor installed by
+# `make install`; the deterministic randombytes() defined inside each
+# tool intentionally shadows the production /dev/urandom-backed one,
+# which is why src/randombytes.o is NOT linked here.
+TOOL_LINK_OBJ := src/verify.o src/util.o $(VENDOR_OBJ)
+
+tools/gen-keypair: tools/gen-keypair.c $(TOOL_LINK_OBJ)
+	$(CC) $(CFLAGS) $(LDFLAGS) -Isrc -Isrc/vendor -o $@ \
+	    tools/gen-keypair.c $(TOOL_LINK_OBJ)
+
+tools/ftr-sign: tools/ftr-sign.c $(TOOL_LINK_OBJ) src/randombytes.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -Isrc -Isrc/vendor -o $@ \
+	    tools/ftr-sign.c $(TOOL_LINK_OBJ) src/randombytes.o
+
 clean:
-	rm -f $(BIN) *.o src/*.o src/vendor/*.o
+	rm -f $(BIN) *.o src/*.o src/vendor/*.o \
+	    tools/gen-keypair tools/ftr-sign
 
 install: build
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 $(BIN) "$(DESTDIR)$(BINDIR)/$(BIN)"
 
-test: build
+test: build tools/gen-keypair tools/ftr-sign
 	./tests/smoke_help.sh
 	./tests/phase4_local_install.sh
 	./tests/phase4b_repo.sh
+	./tests/phase6_signed_repo.sh

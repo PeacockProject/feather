@@ -50,3 +50,40 @@ Local edits vs. upstream:
 
 Verified against FIPS-180-4 Appendix A test vectors. Do not modify
 without re-running those vectors.
+
+## TweetNaCl
+
+- **Upstream:** https://tweetnacl.cr.yp.to/
+- **Version:** `20140427` snapshot (`tweetnacl.c` + `tweetnacl.h`)
+- **License:** public domain
+- **Files:** `tweetnacl.c`, `tweetnacl.h`
+
+Self-contained NaCl reimplementation by D. J. Bernstein, Bernard van
+Gastel, Wesley Janssen, Tanja Lange, Peter Schwabe and Sjaak Smetsers.
+Single ~700-line C file. Used by feather phase 6 for Ed25519 signature
+verification (minisign) and SHA-512 (TweetNaCl's `crypto_hash`).
+
+The 2014 snapshot tickles two warnings under feather's strict CFLAGS:
+
+- `-Wsign-compare` — TweetNaCl's `FOR(i,n)` macro compares a signed
+  index against an unsigned bound throughout. Waived per-file in the
+  Makefile.
+- `-Wunterminated-string-initialization` — the `expand 32-byte k`
+  Salsa20 constant fills `u8 sigma[16]` exactly, no room for NUL.
+  Waived per-file in the Makefile.
+
+Both waivers are scoped to `src/vendor/tweetnacl.o` and never touch
+first-party code. TweetNaCl declares `extern void randombytes(u8 *,
+u64)` but provides no implementation; feather supplies a
+`/dev/urandom`-backed one in `src/randombytes.c`. The signature-verify
+path (`crypto_sign_open`) does not call it; only keypair generation
+does.
+
+To resync:
+
+```sh
+wget https://tweetnacl.cr.yp.to/20140427/tweetnacl.c -O src/vendor/tweetnacl.c
+wget https://tweetnacl.cr.yp.to/20140427/tweetnacl.h -O src/vendor/tweetnacl.h
+```
+
+Do not edit the vendored sources locally.
