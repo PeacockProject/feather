@@ -19,9 +19,15 @@
 set -eu
 
 FTR="${FTR:-./ftr}"
+GEN_KEYPAIR="${GEN_KEYPAIR:-./tools/gen-keypair}"
+FTR_SIGN="${FTR_SIGN:-./tools/ftr-sign}"
 
 if [ ! -x "$FTR" ]; then
 	echo "phase4b: error: $FTR not found (run 'make build' first)" >&2
+	exit 2
+fi
+if [ ! -x "$GEN_KEYPAIR" ] || [ ! -x "$FTR_SIGN" ]; then
+	echo "phase4b: error: keypair/sign tools missing (run 'make tools/gen-keypair tools/ftr-sign')" >&2
 	exit 2
 fi
 if ! command -v tar >/dev/null 2>&1; then
@@ -42,10 +48,21 @@ PEACOCK_PREFIX="$WORK/peacock"
 APPS_PREFIX="$WORK/apps"
 COMPAT_PREFIX="$WORK/compat"
 CONF="$WORK/feather.conf"
-mkdir -p "$REPO_ROOT" "$DB_ROOT" "$PEACOCK_PREFIX" "$APPS_PREFIX" "$COMPAT_PREFIX"
+KEYS="$WORK/keys"
+mkdir -p "$REPO_ROOT" "$DB_ROOT" "$PEACOCK_PREFIX" "$APPS_PREFIX" "$COMPAT_PREFIX" "$KEYS"
 
 export FTR_DB_ROOT="$DB_ROOT"
 export FTR_CONFIG="$CONF"
+
+# Generate a deterministic test keypair; point $FTR_PUBKEY at it so
+# the in-binary placeholder default isn't even consulted.
+"$GEN_KEYPAIR" "phase4b-repo-test-key" "$KEYS/repo.pub" "$KEYS/repo.sec" \
+	"phase4b repo test key" >/dev/null
+export FTR_PUBKEY="$KEYS/repo.pub"
+
+sign_file() {
+	"$FTR_SIGN" "$KEYS/repo.sec" "$1" "$1.sig" "phase4b: $(basename "$1")"
+}
 
 fail() {
 	echo "phase4b: FAIL: $*" >&2
@@ -84,6 +101,7 @@ echo "peacock-shell-stub v0.1"
 EOF
 chmod +x "$P1/files/bin/peacock-shell-stub"
 build_archive "$P1" "$REPO_ROOT/peacock-shell-stub-0.1.0.feather"
+sign_file "$REPO_ROOT/peacock-shell-stub-0.1.0.feather"
 
 # ----------------------------------------------------------------
 # Stage app-stub-0.1.0 (layout=app)
@@ -105,6 +123,7 @@ echo "hello from app-stub"
 EOF
 chmod +x "$APP/files/bin/app-stub"
 build_archive "$APP" "$REPO_ROOT/app-stub-0.1.0.feather"
+sign_file "$REPO_ROOT/app-stub-0.1.0.feather"
 
 # ----------------------------------------------------------------
 # Stage compat-stub-0.1.0 (layout=compat, runtime=glibc)
@@ -123,6 +142,7 @@ layout = "compat"
 EOF
 echo "/* stub libc */" >"$COMPAT/files/lib/libc-stub.so"
 build_archive "$COMPAT" "$REPO_ROOT/compat-stub-0.1.0.feather"
+sign_file "$REPO_ROOT/compat-stub-0.1.0.feather"
 
 # ----------------------------------------------------------------
 # Write index.toml
@@ -159,6 +179,7 @@ write_index() {
 	} >"$idx_path"
 }
 write_index "$REPO_ROOT/index.toml"
+sign_file "$REPO_ROOT/index.toml"
 
 # ----------------------------------------------------------------
 # Write feather.conf
@@ -218,8 +239,8 @@ case "$inst_out" in
 	*) fail "expected 'installed: peacock-shell-stub-0.1.0' line" ;;
 esac
 case "$inst_out" in
-	*"unsigned, phase 6 will sign"*) ;;
-	*) fail "expected 'unsigned, phase 6 will sign' note" ;;
+	*"(verified by "*) ;;
+	*) fail "expected '(verified by <fingerprint>)' note" ;;
 esac
 [ -x "$PEACOCK_PREFIX/bin/peacock-shell-stub" ] || \
 	fail "binary not installed at expected path"
@@ -279,6 +300,7 @@ echo "peacock-shell-stub v0.2"
 EOF
 chmod +x "$P2/files/bin/peacock-shell-stub"
 build_archive "$P2" "$REPO_ROOT/peacock-shell-stub-0.2.0.feather"
+sign_file "$REPO_ROOT/peacock-shell-stub-0.2.0.feather"
 write_index "$REPO_ROOT/index.toml.new"
 # append second [[package]] entry; rebuild whole index for simplicity:
 {
@@ -310,6 +332,7 @@ write_index "$REPO_ROOT/index.toml.new"
 		printf 'size = %s\n\n' "$size"
 	done
 } >"$REPO_ROOT/index.toml"
+sign_file "$REPO_ROOT/index.toml"
 
 "$FTR" sync >/dev/null
 up_out=$("$FTR" upgrade --peacock-prefix "$PEACOCK_PREFIX" \
