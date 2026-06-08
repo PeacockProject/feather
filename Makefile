@@ -48,13 +48,14 @@ SRC := \
 
 OBJ := $(SRC:.c=.o)
 
-# Vendored single-file TOML parser. Kept byte-identical to upstream,
-# so we compile it through its own rule rather than the generic
-# src/%.o rule. It happens to be clean under -Wall -Wextra -Werror
-# -pedantic today, but we keep the carve-out so future upstream syncs
-# that trip a new warning can be waived here without polluting the
-# global CFLAGS for first-party code.
-VENDOR_OBJ := src/vendor/toml.o
+# Vendored single-file libraries. Kept byte-identical (or near-so)
+# to upstream so resync stays a `cp`. Compiled through dedicated rules
+# rather than the generic src/%.o rule so future upstream syncs that
+# trip a new warning can be waived here without polluting the global
+# CFLAGS for first-party code.
+VENDOR_OBJ := \
+	src/vendor/toml.o \
+	src/vendor/sha256.o
 
 BIN := ftr
 
@@ -71,6 +72,9 @@ src/%.o: src/%.c
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -c -o $@ $<
 
 src/vendor/toml.o: src/vendor/toml.c src/vendor/toml.h
+	$(CC) $(CFLAGS) -Isrc/vendor -c -o $@ $<
+
+src/vendor/sha256.o: src/vendor/sha256.c src/vendor/sha256.h
 	$(CC) $(CFLAGS) -Isrc/vendor -c -o $@ $<
 
 clean:

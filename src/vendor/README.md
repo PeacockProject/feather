@@ -27,3 +27,26 @@ cp /tmp/tomlc99/toml.c /tmp/tomlc99/toml.h src/vendor/
 
 Do not edit the vendored sources locally — keep them byte-identical to
 upstream so resyncing stays a `cp`.
+
+## sha256
+
+- **Upstream:** https://github.com/B-Con/crypto-algorithms
+  (file `sha256.c` + `sha256.h`)
+- **License:**  public domain (per upstream README)
+- **Files:**    `sha256.c`, `sha256.h`
+
+Self-contained SHA-256 implementation, ~150 lines. Used by feather's
+repo client to verify `sha256` fields against fetched archives.
+
+Local edits vs. upstream:
+
+- Combined into a single `.c` + `.h` matching feather's vendor layout.
+- Upstream's `BYTE`/`WORD`/`LONG` typedefs replaced with `<stdint.h>`
+  fixed-width types so the file stays clean under
+  `-Wall -Wextra -Werror -pedantic -std=c99` on platforms where
+  `unsigned long` is not 32 bits.
+- Added `sha256_file_hex(path, hex_out)` convenience that streams a
+  file and returns the lowercase-hex digest. Not present upstream.
+
+Verified against FIPS-180-4 Appendix A test vectors. Do not modify
+without re-running those vectors.
