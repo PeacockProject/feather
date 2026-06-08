@@ -30,6 +30,18 @@ typedef struct {
 	const char *apps_prefix;
 	const char *compat_prefix;
 	const char *data_prefix;
+
+	/* Local installs only: when 1, skip signature verification
+	 * even if a sidecar .sig is present. Ignored by the repo path
+	 * (repo installs always require a verified signature). */
+	int allow_unsigned;
+
+	/* Internal: set by ftr_install_by_name() once the repo path
+	 * has already verified the sig+pubkey, so ftr_install_local()
+	 * doesn't print a misleading "no .sig" WARN about the temp
+	 * file it just extracted. Tests and the public CLI never set
+	 * this. */
+	int _signature_already_verified;
 } ftr_install_opts;
 
 /* Install the .feather archive at `archive_path` according to its

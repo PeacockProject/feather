@@ -42,6 +42,7 @@
 #include "db.h"
 #include "manifest.h"
 #include "util.h"
+#include "verify.h"
 
 /* ---------------------------------------------------------------- *
  * tar shell-out
@@ -272,11 +273,14 @@ int ftr_install_local(const char *archive_path,
 	char *pre_hook = NULL;
 	char *post_hook = NULL;
 	char *resolved_prefix = NULL; /* heap copy for app/compat layouts */
+	char *sig_path = NULL;        /* "<archive>.sig" — may be absent */
 	ftr_manifest m;
-	char err[256];
+	char err[512];
 	const char *prefix;
 	pathvec pv;
 	int rc = -1;
+	int sig_verified = 0;
+	char sig_fingerprint[17] = {0};
 
 	memset(&m, 0, sizeof(m));
 	memset(&pv, 0, sizeof(pv));
@@ -286,14 +290,76 @@ int ftr_install_local(const char *archive_path,
 		return -1;
 	}
 
+	/* Local sidecar signature lookup. <archive>.sig next to the
+	 * archive is verified if present; if absent and
+	 * --allow-unsigned isn't set, we install but WARN. The repo
+	 * path handles its own (mandatory) sig fetch + verify before
+	 * calling into here, so by the time we get here the archive
+	 * has already been authenticated. We detect that by
+	 * --allow-unsigned being unset AND the sidecar missing —
+	 * that's the only case where we WARN. */
+	{
+		size_t n = strlen(archive_path) + strlen(".sig") + 1;
+		sig_path = malloc(n);
+		if (!sig_path) {
+			err_log("install: out of memory");
+			return -1;
+		}
+		(void)snprintf(sig_path, n, "%s.sig", archive_path);
+	}
+
+	/* Repo path already authenticated this archive; don't re-verify
+	 * (or print misleading "no .sig" lines) on the temp file. */
+	if (opts && opts->_signature_already_verified) {
+		/* fall through to extraction; success line is the
+		 * "(verified by ...)" form printed by ftr_install_by_name. */
+	} else if (path_exists(sig_path)) {
+		if (opts && opts->allow_unsigned) {
+			info_log("install: --allow-unsigned set; skipping "
+			         "signature verification for '%s'",
+			         archive_path);
+		} else {
+			ftr_pubkey pk;
+			ftr_signature sig;
+			memset(&pk, 0, sizeof(pk));
+			memset(&sig, 0, sizeof(sig));
+			if (ftr_verify_resolve_pubkey(NULL, &pk,
+			                              err, sizeof(err)) != 0) {
+				err_log("install: cannot load pubkey: %s", err);
+				free(sig_path);
+				return -1;
+			}
+			if (ftr_verify_load_signature(sig_path, &sig,
+			                              err, sizeof(err)) != 0) {
+				err_log("install: %s", err);
+				free(sig_path);
+				return -1;
+			}
+			if (ftr_verify_archive(archive_path, &sig, &pk,
+			                       err, sizeof(err)) != 0) {
+				ftr_pubkey_fingerprint(&pk, sig_fingerprint);
+				err_log("install: signature verify failed: %s",
+				        err);
+				err_log("install: expected signer: %s",
+				        sig_fingerprint);
+				free(sig_path);
+				return -1;
+			}
+			ftr_pubkey_fingerprint(&pk, sig_fingerprint);
+			sig_verified = 1;
+		}
+	}
+
 	if (!mkdtemp(tmpl)) {
 		err_log("install: mkdtemp failed: %s", strerror(errno));
+		free(sig_path);
 		return -1;
 	}
 	tmpdir = strdup(tmpl);
 	if (!tmpdir) {
 		err_log("install: out of memory");
 		(void)rm_rf(tmpl);
+		free(sig_path);
 		return -1;
 	}
 
@@ -418,7 +484,28 @@ int ftr_install_local(const char *archive_path,
 		goto out;
 	}
 
-	printf("installed: %s-%s -> %s\n", m.name, m.version, prefix);
+	if (opts && opts->_signature_already_verified) {
+		/* Repo path prints the canonical "installed: ... (verified
+		 * by ...)" line; stay quiet here so output isn't doubled. */
+	} else if (sig_verified) {
+		printf("installed: %s-%s -> %s "
+		       "(verified by %s)\n",
+		       m.name, m.version, prefix, sig_fingerprint);
+	} else if (opts && opts->allow_unsigned) {
+		printf("installed: %s-%s -> %s\n",
+		       m.name, m.version, prefix);
+		fprintf(stderr,
+		        "WARN: %s-%s installed without signature "
+		        "verification (--allow-unsigned)\n",
+		        m.name, m.version);
+	} else {
+		printf("installed: %s-%s -> %s\n",
+		       m.name, m.version, prefix);
+		fprintf(stderr,
+		        "WARN: %s-%s installed without signature "
+		        "(local archive, no .sig file)\n",
+		        m.name, m.version);
+	}
 	rc = 0;
 
 out:
@@ -430,6 +517,7 @@ out:
 	free(pre_hook);
 	free(post_hook);
 	free(resolved_prefix);
+	free(sig_path);
 	if (tmpdir) {
 		(void)rm_rf(tmpdir);
 		free(tmpdir);
