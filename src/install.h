@@ -1,9 +1,20 @@
 /*
- * install.h — overlay install logic.
+ * install.h — overlay install of a local .feather archive.
  *
- * Phase 4 implements `layout = "peacock"` overlay: unpack a .feather
- * archive into /peacock with conflict detection and record the file
- * list in the local DB. Later phases extend to /apps and /compat.
+ * A .feather archive is a gzip-compressed tarball with the layout:
+ *
+ *   <root>/
+ *   ├── manifest.toml         mandatory
+ *   ├── files/                mandatory — tree to overlay onto the prefix
+ *   └── hooks/                optional — pre/post-install + pre/post-remove
+ *
+ * Phase 4 implements `layout = "peacock"` only; other layouts parse
+ * cleanly but ftr_install_local() rejects them with "not yet
+ * supported in phase 4". Phase 5 adds `app`, phase 7 adds `compat`.
+ *
+ * Rollback on partial-install failure is *not* in scope for phase 4
+ * (documented in `ftr install --help`); leftover state must be
+ * cleaned up by `ftr remove` later.
  */
 
 #ifndef FTR_INSTALL_H
@@ -11,9 +22,21 @@
 
 #include "manifest.h"
 
-/* Install an already-parsed manifest's payload into the target root.
- * `target_root` lets callers redirect installs (e.g. a staging chroot)
- * away from "/". Phase 4 implements; phase 2 is a stub returning -1. */
-int ftr_install_overlay(const ftr_manifest *m, const char *target_root);
+typedef struct {
+	/* Override the install prefix for each layout. NULL = use the
+	 * layout's default (e.g. "/peacock" for peacock). Tests set
+	 * these to mktemp'd sandbox dirs. */
+	const char *peacock_prefix;
+	const char *apps_prefix;
+	const char *compat_prefix;
+	const char *data_prefix;
+} ftr_install_opts;
+
+/* Install the .feather archive at `archive_path` according to its
+ * embedded manifest. Returns 0 on success, non-zero on failure (a
+ * diagnostic has already been printed to stderr).
+ */
+int ftr_install_local(const char *archive_path,
+                      const ftr_install_opts *opts);
 
 #endif /* FTR_INSTALL_H */

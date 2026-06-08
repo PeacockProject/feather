@@ -1,12 +1,398 @@
 /*
- * install.c — overlay install logic (phase 4 body).
+ * install.c — overlay install of a local .feather archive.
+ *
+ * Flow:
+ *
+ *   1. mkdtemp /tmp/feather-install-XXXXXX
+ *   2. shell out to `tar -xzf <archive> -C <tmpdir>`
+ *   3. parse <tmpdir>/manifest.toml
+ *   4. reject if layout != peacock for phase 4
+ *   5. run hooks/pre-install.sh if present
+ *   6. walk <tmpdir>/files/ and copy every regular file + symlink
+ *      + dir into <prefix>/, recording each path (relative to the
+ *      filesystem root) for the DB
+ *   7. run hooks/post-install.sh
+ *   8. record into the DB (manifest, files list, hooks dir)
+ *   9. rm -rf the tempdir
+ *
+ * Errors short-circuit; no rollback in phase 4 (use `ftr remove` to
+ * clean up partial state). Hook contract:
+ *
+ *   env FEATHER_PREFIX=<prefix>
+ *       FEATHER_PKG_NAME=<name>
+ *       FEATHER_PKG_VERSION=<version>
+ *       sh <tmpdir>/hooks/<name>.sh
  */
+
+#define _POSIX_C_SOURCE 200809L
 
 #include "install.h"
 
-int ftr_install_overlay(const ftr_manifest *m, const char *target_root)
+#include <dirent.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "common.h"
+#include "db.h"
+#include "manifest.h"
+#include "util.h"
+
+/* ---------------------------------------------------------------- *
+ * tar shell-out
+ * ---------------------------------------------------------------- */
+
+static int run_tar_extract(const char *archive, const char *dest)
 {
-	(void)m;
-	(void)target_root;
+	pid_t pid = fork();
+	int status;
+	if (pid < 0) {
+		return -1;
+	}
+	if (pid == 0) {
+		execlp("tar", "tar", "-xzf", archive, "-C", dest,
+		       (char *)NULL);
+		_exit(127);
+	}
+	while (waitpid(pid, &status, 0) < 0) {
+		if (errno != EINTR) {
+			return -1;
+		}
+	}
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+		return 0;
+	}
 	return -1;
+}
+
+/* ---------------------------------------------------------------- *
+ * hook runner
+ * ---------------------------------------------------------------- */
+
+static int run_hook(const char *script_path, const char *prefix,
+                    const char *name, const char *version)
+{
+	pid_t pid;
+	int status;
+	if (!script_path || !path_exists(script_path)) {
+		return 0; /* hook absent => success */
+	}
+	pid = fork();
+	if (pid < 0) {
+		return -1;
+	}
+	if (pid == 0) {
+		setenv("FEATHER_PREFIX", prefix ? prefix : "", 1);
+		setenv("FEATHER_PKG_NAME", name ? name : "", 1);
+		setenv("FEATHER_PKG_VERSION", version ? version : "", 1);
+		execlp("sh", "sh", script_path, (char *)NULL);
+		_exit(127);
+	}
+	while (waitpid(pid, &status, 0) < 0) {
+		if (errno != EINTR) {
+			return -1;
+		}
+	}
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+		return 0;
+	}
+	return -1;
+}
+
+/* ---------------------------------------------------------------- *
+ * walk + overlay
+ * ---------------------------------------------------------------- */
+
+typedef struct {
+	char **v;
+	size_t n;
+	size_t cap;
+} pathvec;
+
+static int pathvec_push(pathvec *pv, char *s)
+{
+	if (pv->n == pv->cap) {
+		size_t nc = (pv->cap == 0) ? 64 : pv->cap * 2;
+		char **tmp = realloc(pv->v, nc * sizeof(*tmp));
+		if (!tmp) {
+			return -1;
+		}
+		pv->v = tmp;
+		pv->cap = nc;
+	}
+	pv->v[pv->n++] = s;
+	return 0;
+}
+
+static void pathvec_free(pathvec *pv)
+{
+	size_t i;
+	for (i = 0; i < pv->n; i++) {
+		free(pv->v[i]);
+	}
+	free(pv->v);
+	pv->v = NULL;
+	pv->n = pv->cap = 0;
+}
+
+/* Recursively walk `files_root/suffix`, replicating into
+ * `prefix/suffix`. Every produced installed path (relative to the
+ * filesystem root, leading '/' stripped) gets appended to `pv`. */
+static int walk_overlay(const char *files_root, const char *suffix,
+                        const char *prefix, pathvec *pv)
+{
+	char *src = path_join(2, files_root, suffix);
+	char *dst = path_join(2, prefix, suffix);
+	DIR *d;
+	struct dirent *de;
+	struct stat st;
+
+	if (!src || !dst) {
+		err_log("install: out of memory");
+		free(src); free(dst);
+		return -1;
+	}
+	if (lstat(src, &st) != 0) {
+		err_log("install: cannot stat '%s': %s", src,
+		        strerror(errno));
+		free(src); free(dst);
+		return -1;
+	}
+
+	if (S_ISDIR(st.st_mode)) {
+		if (mkdir_p(dst, 0755) != 0) {
+			err_log("install: cannot create dir '%s': %s",
+			        dst, strerror(errno));
+			free(src); free(dst);
+			return -1;
+		}
+		d = opendir(src);
+		if (!d) {
+			err_log("install: cannot open '%s': %s", src,
+			        strerror(errno));
+			free(src); free(dst);
+			return -1;
+		}
+		while ((de = readdir(d)) != NULL) {
+			char *next_suffix;
+			int rc;
+			if (strcmp(de->d_name, ".") == 0 ||
+			    strcmp(de->d_name, "..") == 0) {
+				continue;
+			}
+			if (suffix && *suffix) {
+				next_suffix = path_join(2, suffix, de->d_name);
+			} else {
+				next_suffix = strdup(de->d_name);
+			}
+			if (!next_suffix) {
+				closedir(d);
+				free(src); free(dst);
+				return -1;
+			}
+			rc = walk_overlay(files_root, next_suffix,
+			                  prefix, pv);
+			free(next_suffix);
+			if (rc != 0) {
+				closedir(d);
+				free(src); free(dst);
+				return -1;
+			}
+		}
+		closedir(d);
+	} else if (S_ISLNK(st.st_mode)) {
+		char target[4096];
+		ssize_t len = readlink(src, target, sizeof(target) - 1);
+		if (len < 0) {
+			err_log("install: readlink '%s': %s", src,
+			        strerror(errno));
+			free(src); free(dst);
+			return -1;
+		}
+		target[len] = '\0';
+		(void)unlink(dst);
+		if (symlink(target, dst) != 0) {
+			err_log("install: symlink '%s': %s", dst,
+			        strerror(errno));
+			free(src); free(dst);
+			return -1;
+		}
+	} else if (S_ISREG(st.st_mode)) {
+		if (copy_file(src, dst) != 0) {
+			err_log("install: cannot copy '%s' -> '%s': %s",
+			        src, dst, strerror(errno));
+			free(src); free(dst);
+			return -1;
+		}
+	} else {
+		err_log("install: unsupported file type at '%s'", src);
+		free(src); free(dst);
+		return -1;
+	}
+
+	/* Record the resulting path. Skip the synthetic root dir
+	 * (suffix == "") so the DB doesn't "own" the prefix itself. */
+	if (suffix && *suffix) {
+		const char *p = dst;
+		while (*p == '/') {
+			p++;
+		}
+		{
+			char *copy = strdup(p);
+			if (!copy || pathvec_push(pv, copy) != 0) {
+				free(copy);
+				err_log("install: out of memory");
+				free(src); free(dst);
+				return -1;
+			}
+		}
+	}
+
+	free(src); free(dst);
+	return 0;
+}
+
+/* ---------------------------------------------------------------- *
+ * public entry
+ * ---------------------------------------------------------------- */
+
+int ftr_install_local(const char *archive_path,
+                      const ftr_install_opts *opts)
+{
+	char tmpl[] = "/tmp/feather-install-XXXXXX";
+	char *tmpdir = NULL;
+	char *manifest_path = NULL;
+	char *files_root = NULL;
+	char *hooks_dir = NULL;
+	char *pre_hook = NULL;
+	char *post_hook = NULL;
+	ftr_manifest m;
+	char err[256];
+	const char *prefix;
+	pathvec pv;
+	int rc = -1;
+
+	memset(&m, 0, sizeof(m));
+	memset(&pv, 0, sizeof(pv));
+
+	if (!path_exists(archive_path)) {
+		err_log("install: archive not found: '%s'", archive_path);
+		return -1;
+	}
+
+	if (!mkdtemp(tmpl)) {
+		err_log("install: mkdtemp failed: %s", strerror(errno));
+		return -1;
+	}
+	tmpdir = strdup(tmpl);
+	if (!tmpdir) {
+		err_log("install: out of memory");
+		(void)rm_rf(tmpl);
+		return -1;
+	}
+
+	if (run_tar_extract(archive_path, tmpdir) != 0) {
+		err_log("install: tar -xzf '%s' failed", archive_path);
+		goto out;
+	}
+
+	manifest_path = path_join(2, tmpdir, "manifest.toml");
+	files_root    = path_join(2, tmpdir, "files");
+	hooks_dir     = path_join(2, tmpdir, "hooks");
+	if (!manifest_path || !files_root || !hooks_dir) {
+		err_log("install: out of memory");
+		goto out;
+	}
+	if (!path_exists(manifest_path)) {
+		err_log("install: archive missing manifest.toml");
+		goto out;
+	}
+	if (!is_dir(files_root)) {
+		err_log("install: archive missing files/ directory");
+		goto out;
+	}
+
+	if (ftr_manifest_load(manifest_path, &m, err, sizeof(err)) != 0) {
+		err_log("install: %s", err);
+		goto out;
+	}
+
+	if (m.layout != FTR_LAYOUT_PEACOCK) {
+		err_log("install: layout '%s' not yet supported in phase 4 "
+		        "(package '%s')",
+		        ftr_layout_name(m.layout), m.name);
+		goto out;
+	}
+
+	prefix = NULL;
+	if (m.prefix && *m.prefix) {
+		prefix = m.prefix;
+	}
+	if (opts && opts->peacock_prefix) {
+		/* CLI override beats the manifest's hint. */
+		prefix = opts->peacock_prefix;
+	}
+	if (!prefix) {
+		prefix = ftr_layout_default_prefix(FTR_LAYOUT_PEACOCK);
+	}
+
+	if (mkdir_p(prefix, 0755) != 0) {
+		err_log("install: cannot create prefix '%s': %s",
+		        prefix, strerror(errno));
+		goto out;
+	}
+
+	/* pre-install hook (in the unpacked tempdir). */
+	pre_hook = path_join(2, hooks_dir, "pre-install.sh");
+	if (pre_hook && path_exists(pre_hook)) {
+		if (run_hook(pre_hook, prefix, m.name, m.version) != 0) {
+			err_log("install: pre-install hook failed");
+			goto out;
+		}
+	}
+
+	if (walk_overlay(files_root, "", prefix, &pv) != 0) {
+		goto out;
+	}
+
+	if (pv.n > 1) {
+		qsort(pv.v, pv.n, sizeof(*pv.v), strcmp_qsort);
+	}
+
+	/* post-install hook. */
+	post_hook = path_join(2, hooks_dir, "post-install.sh");
+	if (post_hook && path_exists(post_hook)) {
+		if (run_hook(post_hook, prefix, m.name, m.version) != 0) {
+			err_log("install: post-install hook failed");
+			goto out;
+		}
+	}
+
+	if (ftr_db_record(m.name, m.version, manifest_path,
+	                  is_dir(hooks_dir) ? hooks_dir : NULL,
+	                  pv.v, pv.n) != 0) {
+		goto out;
+	}
+
+	printf("installed: %s-%s -> %s\n", m.name, m.version, prefix);
+	rc = 0;
+
+out:
+	pathvec_free(&pv);
+	ftr_manifest_free(&m);
+	free(manifest_path);
+	free(files_root);
+	free(hooks_dir);
+	free(pre_hook);
+	free(post_hook);
+	if (tmpdir) {
+		(void)rm_rf(tmpdir);
+		free(tmpdir);
+	}
+	return rc;
 }
