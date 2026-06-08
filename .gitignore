@@ -4,6 +4,8 @@ ftr
 src/*.o
 src/vendor/*.o
 build/
+tools/gen-keypair
+tools/ftr-sign
 
 # Editor / OS
 *.swp
