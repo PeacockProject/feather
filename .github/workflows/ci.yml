@@ -1,0 +1,15 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang lld python3 curl
+      - run: make build
+      - run: make test
+      - name: static-binary check
+        run: file ftr | grep -q "statically linked"
+      - run: clang-tidy src/*.c -- -Isrc -Isrc/vendor -std=c99
+        continue-on-error: true
+        # clang-tidy hints are advisory for now; will tighten later.
