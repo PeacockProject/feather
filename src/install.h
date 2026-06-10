@@ -8,9 +8,10 @@
  *   ├── files/                mandatory — tree to overlay onto the prefix
  *   └── hooks/                optional — pre/post-install + pre/post-remove
  *
- * Phase 4 implements `layout = "peacock"` only; other layouts parse
- * cleanly but ftr_install_local() rejects them with "not yet
- * supported in phase 4". Phase 5 adds `app`, phase 7 adds `compat`.
+ * Supported layouts: `peacock` (-> /peacock) and `system` (-> /, or a
+ * build chroot via opts->root, used by the Peacock build to install a
+ * package's files into a chroot). `app` / `compat` parse but
+ * ftr_install_local() still rejects them as "not yet supported".
  *
  * Rollback on partial-install failure is *not* in scope for phase 4
  * (documented in `ftr install --help`); leftover state must be
@@ -28,6 +29,14 @@ typedef struct {
 	const char *apps_prefix;
 	const char *compat_prefix;
 	const char *data_prefix;
+
+	/* Root for `layout = "system"` installs — the files/ tree is
+	 * overlaid onto <root>/ (so files/boot/zImage -> <root>/boot/
+	 * zImage, files/usr/... -> <root>/usr/...). NULL = "/". The build
+	 * sets this to a build chroot so a package (kernel, toolchain) is
+	 * installed into the chroot rather than the host; pair it with
+	 * FTR_DB_ROOT=<root>/var/lib/feather so the DB follows. */
+	const char *root;
 
 	/* Local installs only: when 1, skip signature verification
 	 * even if a sidecar .sig is present. Ignored by the repo path

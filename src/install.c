@@ -439,8 +439,20 @@ int ftr_install_local(const char *archive_path,
 		prefix = resolved_prefix;
 		break;
 	}
+	case FTR_LAYOUT_SYSTEM:
+		/* Overlay files/ onto the system root (default "/"), or a build
+		 * chroot via opts->root: files/usr/... -> <root>/usr/...,
+		 * files/boot/zImage -> <root>/boot/zImage. */
+		if (opts && opts->root && *opts->root) {
+			prefix = opts->root;
+		} else if (m.prefix && *m.prefix) {
+			prefix = m.prefix;
+		} else {
+			prefix = ftr_layout_default_prefix(FTR_LAYOUT_SYSTEM);
+		}
+		break;
 	default:
-		err_log("install: layout '%s' not yet supported in phase 4 "
+		err_log("install: layout '%s' not yet supported "
 		        "(package '%s')",
 		        ftr_layout_name(m.layout), m.name);
 		goto out;

@@ -47,6 +47,7 @@ static void print_help(void)
 	printf("  --peacock-prefix <path>   override /peacock prefix\n");
 	printf("  --apps-prefix <path>      override /apps prefix\n");
 	printf("  --compat-prefix <path>    override /compat prefix\n");
+	printf("  --root <path>             layout=system: overlay into <path>/ (build chroot)\n");
 	printf("  --data-prefix <path>      override /data prefix (phase 5)\n");
 	printf("  --allow-unsigned          local archives only: skip sig check\n");
 	printf("  -h, --help                show this help\n");
@@ -345,6 +346,12 @@ int cmd_install(int argc, char **argv)
 				return 2;
 			}
 			opts.data_prefix = argv[i];
+		} else if (strcmp(a, "--root") == 0) {
+			if (++i >= argc) {
+				err_log("install: --root needs an argument");
+				return 2;
+			}
+			opts.root = argv[i];
 		} else if (strcmp(a, "--allow-unsigned") == 0) {
 			opts.allow_unsigned = 1;
 		} else if (a[0] == '-' && a[1] != '\0') {
