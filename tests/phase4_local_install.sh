@@ -160,11 +160,38 @@ if [ -n "$list_out" ]; then
 fi
 
 # ----------------------------------------------------------------
-# negative case: unknown layout must still be rejected
+# negative case: an invalid layout must be rejected
 # ----------------------------------------------------------------
-echo "phase4: --- unknown layout rejection ---"
+echo "phase4: --- invalid layout rejection ---"
+STAGE_BAD="$WORK/stage-bad"
+mkdir -p "$STAGE_BAD/files"
+cat >"$STAGE_BAD/manifest.toml" <<'EOF'
+[package]
+name = "bad-stub"
+version = "0.1.0"
+
+[install]
+layout = "bogus"
+EOF
+echo "placeholder" >"$STAGE_BAD/files/placeholder"
+ARCHIVE_BAD="$WORK/bad-stub.feather"
+( cd "$STAGE_BAD" && tar -czf "$ARCHIVE_BAD" manifest.toml files )
+
+set +e
+bad_out=$("$FTR" install --peacock-prefix "$PREFIX_SANDBOX" \
+                         "$ARCHIVE_BAD" 2>&1)
+bad_rc=$?
+set -e
+
+if [ "$bad_rc" -eq 0 ]; then
+	fail "layout=bogus install should have failed, got rc=0: $bad_out"
+fi
+
+# positive case: layout=system installs into a --root build chroot
+# ----------------------------------------------------------------
+echo "phase4: --- system layout --root install ---"
 STAGE_SYS="$WORK/stage-sys"
-mkdir -p "$STAGE_SYS/files"
+mkdir -p "$STAGE_SYS/files/boot"
 cat >"$STAGE_SYS/manifest.toml" <<'EOF'
 [package]
 name = "sys-stub"
@@ -173,22 +200,17 @@ version = "0.1.0"
 [install]
 layout = "system"
 EOF
-echo "placeholder" >"$STAGE_SYS/files/placeholder"
+echo "DUMMY-ZIMAGE" >"$STAGE_SYS/files/boot/zImage"
 ARCHIVE_SYS="$WORK/sys-stub.feather"
 ( cd "$STAGE_SYS" && tar -czf "$ARCHIVE_SYS" manifest.toml files )
 
-set +e
-sys_out=$("$FTR" install --peacock-prefix "$PREFIX_SANDBOX" \
-                         "$ARCHIVE_SYS" 2>&1)
-sys_rc=$?
-set -e
-
-if [ "$sys_rc" -eq 0 ]; then
-	fail "layout=system install should have failed, got rc=0: $sys_out"
-fi
-case "$sys_out" in
-	*"not yet supported in phase 4"*) ;;
-	*) fail "expected 'not yet supported in phase 4', got: $sys_out" ;;
-esac
+SYS_ROOT="$WORK/sysroot"
+mkdir -p "$SYS_ROOT"
+FTR_DB_ROOT="$SYS_ROOT/var/lib/feather" \
+	"$FTR" install --root "$SYS_ROOT" --allow-unsigned "$ARCHIVE_SYS" \
+	>/dev/null 2>&1 \
+	|| fail "system-layout --root install failed"
+[ -f "$SYS_ROOT/boot/zImage" ] \
+	|| fail "system-layout install did not place files/boot/zImage under --root"
 
 echo "phase4_local_install.sh: PASS"
