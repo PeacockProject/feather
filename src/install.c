@@ -56,8 +56,11 @@ static int run_tar_extract(const char *archive, const char *dest)
 		return -1;
 	}
 	if (pid == 0) {
-		execlp("tar", "tar", "-xzf", archive, "-C", dest,
-		       (char *)NULL);
+		/* GNU/busybox tar already strip a leading '/' and drop ".."
+		 * components by default, so a crafted member name can't escape
+		 * `dest`. The symlink-target traversal that tar does NOT guard is
+		 * handled in walk_overlay via symlink_target_escapes(). */
+		execlp("tar", "tar", "-xzf", archive, "-C", dest, (char *)NULL);
 		_exit(127);
 	}
 	while (waitpid(pid, &status, 0) < 0) {
@@ -141,6 +144,45 @@ static void pathvec_free(pathvec *pv)
 	pv->n = pv->cap = 0;
 }
 
+/* symlink_target_escapes — true if a RELATIVE symlink target, resolved from the
+ * link's own directory (suffix = the link's path within the install root, e.g.
+ * "usr/bin/sh"), would climb above the install root via "..". Absolute targets
+ * resolve within the eventual root at runtime, so they're allowed; this only
+ * rejects "../.." escapes out of the install tree — a traversal vector once
+ * untrusted (remote) feathers become installable. */
+static int symlink_target_escapes(const char *suffix, const char *target)
+{
+	long depth = 0;
+	const char *seg;
+
+	if (target[0] == '/') {
+		return 0; /* absolute: stays within the install root at runtime */
+	}
+	/* number of '/' in suffix == directory depth the link sits at */
+	for (seg = suffix; *seg; seg++) {
+		if (*seg == '/') {
+			depth++;
+		}
+	}
+	seg = target;
+	while (*seg) {
+		const char *slash = strchr(seg, '/');
+		size_t seglen = slash ? (size_t)(slash - seg) : strlen(seg);
+		if (seglen == 2 && seg[0] == '.' && seg[1] == '.') {
+			if (--depth < 0) {
+				return 1;
+			}
+		} else if (seglen > 0 && !(seglen == 1 && seg[0] == '.')) {
+			depth++;
+		}
+		if (!slash) {
+			break;
+		}
+		seg = slash + 1;
+	}
+	return 0;
+}
+
 /* Recursively walk `files_root/suffix`, replicating into
  * `prefix/suffix`. Every produced installed path (relative to the
  * filesystem root, leading '/' stripped) gets appended to `pv`. */
@@ -216,6 +258,12 @@ static int walk_overlay(const char *files_root, const char *suffix,
 			return -1;
 		}
 		target[len] = '\0';
+		if (symlink_target_escapes(suffix, target)) {
+			err_log("install: refusing symlink '%s' -> '%s' "
+			        "(escapes install root)", dst, target);
+			free(src); free(dst);
+			return -1;
+		}
 		(void)unlink(dst);
 		if (symlink(target, dst) != 0) {
 			err_log("install: symlink '%s': %s", dst,
