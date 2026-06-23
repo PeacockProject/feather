@@ -119,5 +119,6 @@ install: build
 test: build tools/gen-keypair tools/ftr-sign
 	./tests/smoke_help.sh
 	./tests/phase4_local_install.sh
+	./tests/phase4c_symlink_guard.sh
 	./tests/phase4b_repo.sh
 	./tests/phase6_signed_repo.sh

@@ -7,8 +7,9 @@
 # verifies the files appeared and the DB lists the package, then
 # removes it and verifies cleanup.
 #
-# Also covers the negative case: a layout=app archive must be
-# rejected with "not yet supported in phase 4".
+# Also covers the negative case: an UNKNOWN layout (layout=bogus) must be
+# rejected. (app/compat layouts are supported now — see install.c; the
+# symlink-traversal guard has its own test, phase4c_symlink_guard.sh.)
 #
 # Run from the repo root: ./tests/phase4_local_install.sh
 
