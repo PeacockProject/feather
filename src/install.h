@@ -8,10 +8,11 @@
  *   ├── files/                mandatory — tree to overlay onto the prefix
  *   └── hooks/                optional — pre/post-install + pre/post-remove
  *
- * Supported layouts: `peacock` (-> /peacock) and `system` (-> /, or a
+ * Supported layouts: `peacock` (-> /peacock), `system` (-> /, or a
  * build chroot via opts->root, used by the Peacock build to install a
- * package's files into a chroot). `app` / `compat` parse but
- * ftr_install_local() still rejects them as "not yet supported".
+ * package's files into a chroot), `app` (-> <apps-prefix>/<name>, default
+ * /apps/<name>) and `compat` (-> <compat-prefix>/<runtime>, default
+ * /compat/<runtime>; requires [package].runtime).
  *
  * Rollback on partial-install failure is *not* in scope for phase 4
  * (documented in `ftr install --help`); leftover state must be

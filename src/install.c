@@ -6,7 +6,7 @@
  *   1. mkdtemp /tmp/feather-install-XXXXXX
  *   2. shell out to `tar -xzf <archive> -C <tmpdir>`
  *   3. parse <tmpdir>/manifest.toml
- *   4. reject if layout != peacock for phase 4
+ *   4. resolve the install prefix from layout (peacock|system|app|compat)
  *   5. run hooks/pre-install.sh if present
  *   6. walk <tmpdir>/files/ and copy every regular file + symlink
  *      + dir into <prefix>/, recording each path (relative to the
