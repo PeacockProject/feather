@@ -39,8 +39,10 @@ SRC := \
 	src/cmd_list.c \
 	src/cmd_files.c \
 	src/cmd_flavor.c \
+	src/cmd_index.c \
 	src/manifest.c \
 	src/install.c \
+	src/resolve.c \
 	src/db.c \
 	src/util.c \
 	src/repo.c \
@@ -122,3 +124,6 @@ test: build tools/gen-keypair tools/ftr-sign
 	./tests/phase4c_symlink_guard.sh
 	./tests/phase4b_repo.sh
 	./tests/phase6_signed_repo.sh
+	./tests/phase7_resolve.sh
+	./tests/phase8_gpg.sh
+	./tests/phase9_index.sh

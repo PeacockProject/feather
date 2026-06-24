@@ -427,13 +427,14 @@ int ftr_install_local(const char *archive_path,
 		err_log("install: archive missing manifest.toml");
 		goto out;
 	}
-	if (!is_dir(files_root)) {
-		err_log("install: archive missing files/ directory");
+	if (ftr_manifest_load(manifest_path, &m, err, sizeof(err)) != 0) {
+		err_log("install: %s", err);
 		goto out;
 	}
 
-	if (ftr_manifest_load(manifest_path, &m, err, sizeof(err)) != 0) {
-		err_log("install: %s", err);
+	/* Metapackages (layout=meta) carry only depends + hooks — no files/. */
+	if (m.layout != FTR_LAYOUT_META && !is_dir(files_root)) {
+		err_log("install: archive missing files/ directory");
 		goto out;
 	}
 
@@ -499,6 +500,10 @@ int ftr_install_local(const char *archive_path,
 			prefix = ftr_layout_default_prefix(FTR_LAYOUT_SYSTEM);
 		}
 		break;
+	case FTR_LAYOUT_META:
+		/* No files to place; prefix only used for the hook env. */
+		prefix = (opts && opts->root && *opts->root) ? opts->root : "/";
+		break;
 	default:
 		err_log("install: layout '%s' not yet supported "
 		        "(package '%s')",
@@ -506,7 +511,7 @@ int ftr_install_local(const char *archive_path,
 		goto out;
 	}
 
-	if (mkdir_p(prefix, 0755) != 0) {
+	if (m.layout != FTR_LAYOUT_META && mkdir_p(prefix, 0755) != 0) {
 		err_log("install: cannot create prefix '%s': %s",
 		        prefix, strerror(errno));
 		goto out;
@@ -521,12 +526,13 @@ int ftr_install_local(const char *archive_path,
 		}
 	}
 
-	if (walk_overlay(files_root, "", prefix, &pv) != 0) {
-		goto out;
-	}
-
-	if (pv.n > 1) {
-		qsort(pv.v, pv.n, sizeof(*pv.v), strcmp_qsort);
+	if (m.layout != FTR_LAYOUT_META) {
+		if (walk_overlay(files_root, "", prefix, &pv) != 0) {
+			goto out;
+		}
+		if (pv.n > 1) {
+			qsort(pv.v, pv.n, sizeof(*pv.v), strcmp_qsort);
+		}
 	}
 
 	/* post-install hook. */

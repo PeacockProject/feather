@@ -62,5 +62,6 @@ int cmd_info(int argc, char **argv);
 int cmd_list(int argc, char **argv);
 int cmd_files(int argc, char **argv);
 int cmd_flavor(int argc, char **argv);
+int cmd_index(int argc, char **argv);
 
 #endif /* FTR_COMMON_H */

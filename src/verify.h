@@ -97,4 +97,12 @@ int ftr_verify_resolve_pubkey(const char *pubkey_path,
                               ftr_pubkey *out,
                               char *errbuf, size_t errbufsz);
 
+/* Verify a detached GPG/PGP signature `sig_path` over `file_path`,
+ * trusting only the ASCII-armored public key at `pubkey_path`. Shells
+ * out to gpg(1) using an ephemeral keyring (no effect on the user's
+ * keyring). Returns 0 iff gpg reports a good signature from that key,
+ * -1 otherwise (errbuf populated, incl. when gpg is not installed). */
+int ftr_verify_gpg(const char *file_path, const char *sig_path,
+                   const char *pubkey_path, char *errbuf, size_t errbufsz);
+
 #endif /* FTR_VERIFY_H */

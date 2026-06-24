@@ -143,6 +143,7 @@ void ftr_repo_list_free(ftr_repo_list *l)
 		free(l->items[i].name);
 		free(l->items[i].url);
 		free(l->items[i].pubkey);
+		free(l->items[i].gpgkey);
 	}
 	free(l->items);
 	l->items = NULL;
@@ -217,6 +218,12 @@ int ftr_repo_load_config(ftr_repo_list *out, char *errbuf, size_t errbufsz)
 				out->items[i].pubkey = pk_d.u.s;
 			}
 		}
+		{
+			toml_datum_t gk_d = toml_string_in(t, "gpgkey");
+			if (gk_d.ok) {
+				out->items[i].gpgkey = gk_d.u.s;
+			}
+		}
 		out->n++;
 	}
 
@@ -233,6 +240,8 @@ fail:
  * index.toml parser
  * ---------------------------------------------------------------- */
 
+static void free_str_array(char **a, size_t n);
+
 void ftr_repo_index_free(ftr_repo_index *idx)
 {
 	size_t i;
@@ -247,6 +256,10 @@ void ftr_repo_index_free(ftr_repo_index *idx)
 		free(idx->entries[i].layout);
 		free(idx->entries[i].archive);
 		free(idx->entries[i].sha256);
+		free(idx->entries[i].arch);
+		free_str_array(idx->entries[i].depends, idx->entries[i].n_depends);
+		free_str_array(idx->entries[i].provides, idx->entries[i].n_provides);
+		free_str_array(idx->entries[i].conflicts, idx->entries[i].n_conflicts);
 	}
 	free(idx->entries);
 	free(idx->repo_name);
@@ -268,6 +281,51 @@ static long long take_opt_int(toml_table_t *t, const char *key)
 		return d.u.i;
 	}
 	return -1;
+}
+
+/* Optional array-of-string. On malformed entries, frees what it parsed
+ * and leaves the outputs untouched (treated as "absent"). */
+static void take_opt_str_array(toml_table_t *t, const char *key,
+                               char ***out, size_t *n_out)
+{
+	toml_array_t *arr = toml_array_in(t, key);
+	int n;
+	int i;
+	char **buf;
+	if (!arr) {
+		return;
+	}
+	n = toml_array_nelem(arr);
+	if (n <= 0) {
+		return;
+	}
+	buf = calloc((size_t)n, sizeof(*buf));
+	if (!buf) {
+		return;
+	}
+	for (i = 0; i < n; i++) {
+		toml_datum_t d = toml_string_at(arr, i);
+		if (!d.ok) {
+			int j;
+			for (j = 0; j < i; j++) {
+				free(buf[j]);
+			}
+			free(buf);
+			return;
+		}
+		buf[i] = d.u.s;
+	}
+	*out = buf;
+	*n_out = (size_t)n;
+}
+
+static void free_str_array(char **a, size_t n)
+{
+	size_t i;
+	for (i = 0; i < n; i++) {
+		free(a[i]);
+	}
+	free(a);
 }
 
 int ftr_repo_index_load(const char *path, const char *repo_name,
@@ -346,6 +404,13 @@ int ftr_repo_index_load(const char *path, const char *repo_name,
 		take_opt_str(t, "runtime",     &out->entries[i].runtime);
 		take_opt_str(t, "layout",      &out->entries[i].layout);
 		take_opt_str(t, "sha256",      &out->entries[i].sha256);
+		take_opt_str(t, "arch",        &out->entries[i].arch);
+		take_opt_str_array(t, "depends",
+		                   &out->entries[i].depends, &out->entries[i].n_depends);
+		take_opt_str_array(t, "provides",
+		                   &out->entries[i].provides, &out->entries[i].n_provides);
+		take_opt_str_array(t, "conflicts",
+		                   &out->entries[i].conflicts, &out->entries[i].n_conflicts);
 		out->entries[i].size = take_opt_int(t, "size");
 		out->entries[i].repo_name = out->repo_name;
 		out->n_entries++;

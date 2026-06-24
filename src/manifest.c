@@ -201,6 +201,9 @@ static ftr_layout_t parse_layout(const char *s)
 	if (strcmp(s, "system") == 0) {
 		return FTR_LAYOUT_SYSTEM;
 	}
+	if (strcmp(s, "meta") == 0) {
+		return FTR_LAYOUT_META;
+	}
 	return FTR_LAYOUT_UNKNOWN;
 }
 
@@ -215,6 +218,7 @@ const char *ftr_layout_name(ftr_layout_t l)
 	case FTR_LAYOUT_APP:     return "app";
 	case FTR_LAYOUT_COMPAT:  return "compat";
 	case FTR_LAYOUT_SYSTEM:  return "system";
+	case FTR_LAYOUT_META:    return "meta";
 	case FTR_LAYOUT_UNKNOWN:
 	default:                 return "unknown";
 	}
@@ -227,6 +231,7 @@ const char *ftr_layout_default_prefix(ftr_layout_t l)
 	case FTR_LAYOUT_APP:     return "/apps";
 	case FTR_LAYOUT_COMPAT:  return "/compat";
 	case FTR_LAYOUT_SYSTEM:  return "/";
+	case FTR_LAYOUT_META:    return NULL;  /* no files to overlay */
 	case FTR_LAYOUT_UNKNOWN:
 	default:                 return NULL;
 	}
@@ -271,6 +276,9 @@ int ftr_manifest_load(const char *path, ftr_manifest *out,
 	if (take_optional_string_array(pkg, "flavor",
 	                               &out->flavors, &out->n_flavors,
 	                               errbuf, errbufsz) < 0) goto fail;
+	if (take_optional_string_array(pkg, "depends",
+	                               &out->depends, &out->n_depends,
+	                               errbuf, errbufsz) < 0) goto fail;
 
 	/* [install] */
 	inst = toml_table_in(root, "install");
@@ -284,7 +292,7 @@ int ftr_manifest_load(const char *path, ftr_manifest *out,
 	if (out->layout == FTR_LAYOUT_UNKNOWN) {
 		set_err(errbuf, errbufsz,
 		        "[install].layout = \"%s\" — must be one of "
-		        "peacock|app|compat|system", layout_str);
+		        "peacock|app|compat|system|meta", layout_str);
 		free(layout_str);
 		goto fail;
 	}
@@ -326,6 +334,11 @@ void ftr_manifest_free(ftr_manifest *m)
 		free(m->flavors[i]);
 	}
 	free(m->flavors);
+
+	for (i = 0; i < m->n_depends; i++) {
+		free(m->depends[i]);
+	}
+	free(m->depends);
 
 	for (i = 0; i < m->n_provides; i++) {
 		free(m->provides[i].name);

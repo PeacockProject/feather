@@ -126,6 +126,57 @@ static int sync_one(const ftr_repo_cfg *r)
 		goto out;
 	}
 
+	/* GPG path: when the repo declares a gpgkey, the index is trusted
+	 * via a detached GPG signature (index.toml.asc) verified with
+	 * gpg(1) — not minisign. */
+	if (r->gpgkey && *r->gpgkey) {
+		char *asc_url = join_url(r->url, "index.toml.asc");
+		char *asc_final = path_join(2, dst_dir, "index.toml.asc");
+		char *asc_tmp = NULL;
+		if (asc_final) {
+			size_t n = strlen(asc_final) + strlen(".new") + 1;
+			asc_tmp = malloc(n);
+			if (asc_tmp) {
+				(void)snprintf(asc_tmp, n, "%s.new", asc_final);
+			}
+		}
+		if (!asc_url || !asc_final || !asc_tmp) {
+			err_log("sync: out of memory");
+			(void)unlink(idx_tmp);
+			free(asc_url); free(asc_final); free(asc_tmp);
+			goto out;
+		}
+		if (ftr_repo_fetch(asc_url, asc_tmp, 0, NULL,
+		                   err, sizeof(err)) != 0) {
+			err_log("sync: cannot fetch GPG signature: %s", err);
+			(void)unlink(idx_tmp);
+			free(asc_url); free(asc_final); free(asc_tmp);
+			goto out;
+		}
+		if (ftr_verify_gpg(idx_tmp, asc_tmp, r->gpgkey,
+		                   err, sizeof(err)) != 0) {
+			fprintf(stderr,
+			        "WARN: GPG verification failed for %s; "
+			        "keeping previous index (%s)\n", r->name, err);
+			(void)unlink(idx_tmp);
+			(void)unlink(asc_tmp);
+			rc = have_old_index ? 0 : -1;
+			free(asc_url); free(asc_final); free(asc_tmp);
+			goto out;
+		}
+		if (rename(idx_tmp, idx_final) != 0 ||
+		    rename(asc_tmp, asc_final) != 0) {
+			err_log("sync: rename into place failed: %s",
+			        strerror(errno));
+			free(asc_url); free(asc_final); free(asc_tmp);
+			goto out;
+		}
+		printf("synced: %s (gpg-verified)\n", r->name);
+		rc = 0;
+		free(asc_url); free(asc_final); free(asc_tmp);
+		goto out;
+	}
+
 	/* Step 2: pull sig. */
 	if (ftr_repo_fetch(sig_url, sig_tmp, 0, &skipped_sig,
 	                   err, sizeof(err)) != 0) {

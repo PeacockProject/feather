@@ -21,6 +21,7 @@ typedef enum {
 	FTR_LAYOUT_APP,
 	FTR_LAYOUT_COMPAT,
 	FTR_LAYOUT_SYSTEM,
+	FTR_LAYOUT_META,    /* metapackage: no files/ tree, only depends + hooks */
 	FTR_LAYOUT_UNKNOWN
 } ftr_layout_t;
 
@@ -42,6 +43,12 @@ typedef struct {
 	/* [install] */
 	ftr_layout_t layout;  /* mandatory */
 	char *prefix;         /* optional override; NULL = use layout default */
+
+	/* [package].depends — packages/capabilities required before this one.
+	 * Each entry is a bare name (optional ">=ver" suffix, version ignored
+	 * for now). Resolved against installed/available names + [provides]. */
+	char **depends;
+	size_t n_depends;
 
 	/* [provides] */
 	ftr_capability *provides;

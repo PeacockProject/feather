@@ -37,6 +37,8 @@ typedef struct {
 	char *name;
 	char *url;
 	char *pubkey;   /* optional per-repo minisign pubkey file path; NULL = default */
+	char *gpgkey;   /* optional ASCII-armored GPG pubkey; when set, the index is
+	                 * verified via gpg(1) against index.toml.asc instead of minisign */
 } ftr_repo_cfg;
 
 typedef struct {
@@ -53,7 +55,14 @@ typedef struct {
 	char *layout;      /* may be NULL */
 	char *archive;     /* relative filename, e.g. "peacock-shell-0.1.0.feather" */
 	char *sha256;      /* lowercase-hex; may be NULL if absent */
+	char *arch;        /* "aarch64" etc.; NULL/"any" = arch-independent */
 	long long size;    /* -1 if absent */
+	/* Dependency metadata (mirrored from the manifest by the publish
+	 * tool). All heap-owned arrays of bare names; the resolver works off
+	 * these without downloading the archive. */
+	char **depends;    size_t n_depends;
+	char **provides;   size_t n_provides;
+	char **conflicts;  size_t n_conflicts;
 	/* repo name this entry came from (borrowed pointer into the
 	 * caller-owned ftr_repo_index that contains it). */
 	const char *repo_name;

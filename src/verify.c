@@ -28,9 +28,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "tweetnacl.h"
+#include "util.h"
 
 /* ---------------------------------------------------------------- *
  * FTR_DEFAULT_PUBKEY — PHASE 6 PLACEHOLDER KEY
@@ -604,4 +606,105 @@ int ftr_verify_resolve_pubkey(const char *pubkey_path,
 	}
 	return ftr_verify_parse_pubkey(FTR_DEFAULT_PUBKEY, out,
 	                               errbuf, errbufsz);
+}
+
+/* ---------------------------------------------------------------- *
+ * GPG detached-signature verification (shell-out to gpg(1))
+ * ---------------------------------------------------------------- */
+
+static void gpg_set_err(char *errbuf, size_t errbufsz, const char *fmt, ...)
+{
+	va_list ap;
+	if (!errbuf || errbufsz == 0) {
+		return;
+	}
+	va_start(ap, fmt);
+	(void)vsnprintf(errbuf, errbufsz, fmt, ap);
+	va_end(ap);
+	errbuf[errbufsz - 1] = '\0';
+}
+
+/* Run argv (NULL-terminated) with stdout+stderr sent to /dev/null.
+ * Returns the child's exit status (0 == success), or -1 to launch. */
+static int gpg_run_quiet(const char *const argv[])
+{
+	pid_t pid = fork();
+	int status;
+	if (pid < 0) {
+		return -1;
+	}
+	if (pid == 0) {
+		int dn = open("/dev/null", O_WRONLY);
+		if (dn >= 0) {
+			(void)dup2(dn, 1);
+			(void)dup2(dn, 2);
+			if (dn > 2) {
+				(void)close(dn);
+			}
+		}
+		execvp(argv[0], (char *const *)argv);
+		_exit(127);
+	}
+	while (waitpid(pid, &status, 0) < 0) {
+		if (errno != EINTR) {
+			return -1;
+		}
+	}
+	if (WIFEXITED(status)) {
+		return WEXITSTATUS(status);
+	}
+	return -1;
+}
+
+int ftr_verify_gpg(const char *file_path, const char *sig_path,
+                   const char *pubkey_path, char *errbuf, size_t errbufsz)
+{
+	char home[] = "/tmp/feather-gpg-XXXXXX";
+	int rc = -1;
+
+	if (!file_path || !sig_path || !pubkey_path) {
+		gpg_set_err(errbuf, errbufsz, "gpg verify: missing argument");
+		return -1;
+	}
+
+	/* Ephemeral keyring so we never touch the user's ~/.gnupg and so
+	 * only the supplied key is trusted for this verification. */
+	if (!mkdtemp(home)) {
+		gpg_set_err(errbuf, errbufsz,
+		            "gpg verify: cannot create temp homedir: %s",
+		            strerror(errno));
+		return -1;
+	}
+
+	{
+		const char *imp[] = {
+			"gpg", "--homedir", home, "--batch", "--quiet",
+			"--import", pubkey_path, NULL
+		};
+		int r = gpg_run_quiet(imp);
+		if (r != 0) {
+			gpg_set_err(errbuf, errbufsz,
+			            (r < 0)
+			                ? "gpg verify: gpg(1) not found in PATH"
+			                : "gpg verify: failed to import pubkey '%s'",
+			            pubkey_path);
+			goto out;
+		}
+	}
+	{
+		const char *ver[] = {
+			"gpg", "--homedir", home, "--batch", "--quiet",
+			"--verify", sig_path, file_path, NULL
+		};
+		if (gpg_run_quiet(ver) != 0) {
+			gpg_set_err(errbuf, errbufsz,
+			            "gpg verify: bad or untrusted signature");
+			goto out;
+		}
+	}
+	rc = 0;
+
+out:
+	(void)rm_rf(home);
+	return rc;
 }
