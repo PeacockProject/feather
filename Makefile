@@ -40,6 +40,8 @@ SRC := \
 	src/cmd_files.c \
 	src/cmd_flavor.c \
 	src/cmd_index.c \
+	src/cmd_key.c \
+	src/keyring.c \
 	src/manifest.c \
 	src/install.c \
 	src/resolve.c \

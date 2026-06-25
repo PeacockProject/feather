@@ -22,6 +22,7 @@
 #include "repo.h"
 #include "util.h"
 #include "verify.h"
+#include "keyring.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -185,15 +186,9 @@ static int sync_one(const ftr_repo_cfg *r)
 		goto out;
 	}
 
-	/* Step 3: load pubkey + verify sig. */
-	if (ftr_verify_resolve_pubkey(r->pubkey, &pk,
-	                              err, sizeof(err)) != 0) {
-		err_log("sync: cannot load pubkey for '%s': %s",
-		        r->name, err);
-		(void)unlink(idx_tmp);
-		(void)unlink(sig_tmp);
-		goto out;
-	}
+	/* Step 3: load sig, then resolve the trusting key (pin > $FTR_PUBKEY >
+	 * keyring by the sig's key_id > built-in default) + verify. A repo whose
+	 * signing key is in the keyring needs no per-repo `pubkey` pin. */
 	if (ftr_verify_load_signature(sig_tmp, &sig,
 	                              err, sizeof(err)) != 0) {
 		fprintf(stderr,
@@ -203,6 +198,14 @@ static int sync_one(const ftr_repo_cfg *r)
 		(void)unlink(idx_tmp);
 		(void)unlink(sig_tmp);
 		rc = have_old_index ? 0 : -1;
+		goto out;
+	}
+	if (ftr_keyring_resolve(r->pubkey, &sig, &pk,
+	                        err, sizeof(err)) != 0) {
+		err_log("sync: cannot load pubkey for '%s': %s",
+		        r->name, err);
+		(void)unlink(idx_tmp);
+		(void)unlink(sig_tmp);
 		goto out;
 	}
 	if (ftr_verify_archive(idx_tmp, &sig, &pk,

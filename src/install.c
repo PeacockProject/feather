@@ -43,6 +43,7 @@
 #include "manifest.h"
 #include "util.h"
 #include "verify.h"
+#include "keyring.h"
 
 /* ---------------------------------------------------------------- *
  * tar shell-out
@@ -371,15 +372,15 @@ int ftr_install_local(const char *archive_path,
 			ftr_signature sig;
 			memset(&pk, 0, sizeof(pk));
 			memset(&sig, 0, sizeof(sig));
-			if (ftr_verify_resolve_pubkey(NULL, &pk,
-			                              err, sizeof(err)) != 0) {
-				err_log("install: cannot load pubkey: %s", err);
-				free(sig_path);
-				return -1;
-			}
 			if (ftr_verify_load_signature(sig_path, &sig,
 			                              err, sizeof(err)) != 0) {
 				err_log("install: %s", err);
+				free(sig_path);
+				return -1;
+			}
+			if (ftr_keyring_resolve(NULL, &sig, &pk,
+			                        err, sizeof(err)) != 0) {
+				err_log("install: cannot load pubkey: %s", err);
 				free(sig_path);
 				return -1;
 			}

@@ -80,6 +80,7 @@ const char *ftr_repo_file_url_path(const char *url)
  * ---------------------------------------------------------------- */
 
 static int g_curl_state = -1;
+static int g_wget_state = -1;
 
 static int find_in_path(const char *name)
 {
@@ -115,6 +116,14 @@ int ftr_repo_have_curl(void)
 		g_curl_state = find_in_path("curl") ? 1 : 0;
 	}
 	return g_curl_state;
+}
+
+int ftr_repo_have_wget(void)
+{
+	if (g_wget_state < 0) {
+		g_wget_state = find_in_path("wget") ? 1 : 0;
+	}
+	return g_wget_state;
 }
 
 /* ---------------------------------------------------------------- *
@@ -539,13 +548,23 @@ static int curl_fetch_https(const char *url, const char *out_path,
 	char *stderr_buf = NULL;
 	size_t stderr_cap = 4096;
 	size_t stderr_len = 0;
+	int use_wget = 0;
+	const char *tool = "curl";
 
+	/* Prefer curl; fall back to wget (e.g. busybox wget on recovery images).
+	 * wget's TLS cert validation may be a no-op, but feather verifies the
+	 * minisign signature of every artifact, so transport auth isn't the trust
+	 * anchor here. */
 	if (!ftr_repo_have_curl()) {
-		set_err(errbuf, errbufsz,
-		        "curl not found in PATH; install curl "
-		        "(host: apk add curl / pacman -S curl / "
-		        "apt install curl)");
-		return -1;
+		if (ftr_repo_have_wget()) {
+			use_wget = 1;
+			tool = "wget";
+		} else {
+			set_err(errbuf, errbufsz,
+			        "neither curl nor wget found in PATH; install "
+			        "one (apk add curl / pacman -S curl / apt install curl)");
+			return -1;
+		}
 	}
 
 	if (pipe(err_pipe) != 0) {
@@ -575,13 +594,20 @@ static int curl_fetch_https(const char *url, const char *out_path,
 				close(devnull);
 			}
 		}
-		execlp("curl", "curl",
-		       "-fsSL",
-		       "--retry", "3",
-		       "--retry-delay", "2",
-		       "-o", out_path,
-		       url,
-		       (char *)NULL);
+		if (use_wget) {
+			/* busybox/GNU wget: -q quiet, -T timeout, -O output. */
+			execlp("wget", "wget",
+			       "-q", "-T", "30", "-O", out_path, url,
+			       (char *)NULL);
+		} else {
+			execlp("curl", "curl",
+			       "-fsSL",
+			       "--retry", "3",
+			       "--retry-delay", "2",
+			       "-o", out_path,
+			       url,
+			       (char *)NULL);
+		}
 		_exit(127);
 	}
 
@@ -629,9 +655,11 @@ static int curl_fetch_https(const char *url, const char *out_path,
 		return 0;
 	}
 
-	/* curl exit 22 = HTTP error (with --fail). For optional
-	 * fetches treat that as "absent" rather than hard failure. */
-	if (optional && WIFEXITED(status) && WEXITSTATUS(status) == 22) {
+	/* curl exit 22 = HTTP error (with --fail); wget returns non-zero on a
+	 * missing file. For optional fetches treat that as "absent" rather than a
+	 * hard failure (used for the .sig sidecar lookup). */
+	if (optional && WIFEXITED(status) &&
+	    (use_wget ? WEXITSTATUS(status) != 0 : WEXITSTATUS(status) == 22)) {
 		(void)unlink(out_path); /* curl leaves partial files */
 		if (skipped) {
 			*skipped = 1;
@@ -650,7 +678,8 @@ static int curl_fetch_https(const char *url, const char *out_path,
 			tlen--;
 		}
 		set_err(errbuf, errbufsz,
-		        "curl: exit %d fetching '%s'%s%.*s",
+		        "%s: exit %d fetching '%s'%s%.*s",
+		        tool,
 		        WIFEXITED(status) ? WEXITSTATUS(status) : -1,
 		        url,
 		        tlen ? ": " : "",

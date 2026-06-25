@@ -31,6 +31,7 @@
 #include "resolve.h"
 #include "util.h"
 #include "verify.h"
+#include "keyring.h"
 #include "sha256.h"
 
 #include <errno.h>
@@ -217,16 +218,18 @@ static int install_resolved_entry(const ftr_pkg_index_entry *best,
 		}
 	}
 
-	if (ftr_verify_resolve_pubkey(src_repo_pubkey, &pk,
-	                              err, sizeof(err)) != 0) {
-		err_log("install: cannot load pubkey for repo '%s': %s",
-		        best->repo_name, err);
-		goto out;
-	}
+	/* Load the signature first so the keyring can be looked up by its
+	 * embedded key_id (pin > $FTR_PUBKEY > keyring > built-in default). */
 	if (ftr_verify_load_signature(sig_path, &sig,
 	                              err, sizeof(err)) != 0) {
 		err_log("install: %s-%s: %s",
 		        best->name, best->version, err);
+		goto out;
+	}
+	if (ftr_keyring_resolve(src_repo_pubkey, &sig, &pk,
+	                        err, sizeof(err)) != 0) {
+		err_log("install: cannot load pubkey for repo '%s': %s",
+		        best->repo_name, err);
 		goto out;
 	}
 	if (ftr_verify_archive(arch_path, &sig, &pk,

@@ -31,6 +31,7 @@ static const struct subcmd SUBCMDS[] = {
 	{ "files",   cmd_files,   "list files owned by an installed package" },
 	{ "flavor",  cmd_flavor,  "report the active Peacock base flavor"    },
 	{ "index",   cmd_index,   "build a repo index.toml from a dir of .feather" },
+	{ "key",     cmd_key,     "manage the local trust keyring"            },
 };
 
 static const size_t N_SUBCMDS = sizeof(SUBCMDS) / sizeof(SUBCMDS[0]);

@@ -131,8 +131,9 @@ int ftr_repo_is_file_url(const char *url);
 /* True if `url` begins with `http://` or `https://`. */
 int ftr_repo_is_http_url(const char *url);
 
-/* Probe for curl(1) in PATH. Result is cached after first call.
- * Returns 1 if found, 0 if absent. */
+/* Probe for curl(1) / wget(1) in PATH. Result is cached after first call.
+ * Returns 1 if found, 0 if absent. (fetch prefers curl, falls back to wget.) */
 int ftr_repo_have_curl(void);
+int ftr_repo_have_wget(void);
 
 #endif /* FTR_REPO_H */
