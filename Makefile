@@ -66,7 +66,11 @@ VENDOR_OBJ := \
 # Per-file warning waivers for TweetNaCl's 2014 snapshot. Two
 # diagnostics fire under our strict CFLAGS; both are stylistic and
 # scoped to the vendored code, never to first-party sources.
+# -Wno-unknown-warning-option first so clang/zig ignores the GCC-only
+# -Wno-unterminated-string-initialization (and GCC silently accepts the
+# unknown -Wno-*), keeping the static zig-cc cross build portable.
 TWEETNACL_WAIVERS := \
+	-Wno-unknown-warning-option \
 	-Wno-sign-compare \
 	-Wno-unterminated-string-initialization
 
