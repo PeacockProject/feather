@@ -3,8 +3,8 @@
  *
  * Find the highest-version entry for <name> across all synced repo
  * indexes (first-listed repo wins on tie) and print its metadata.
- * No-op success when no repos are synced or no match found (consistent
- * with `ftr search`).
+ * Exits non-zero when <name> isn't found in any synced index, so callers
+ * can use it as a "package available?" gate.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -22,7 +22,7 @@ static void print_help(void)
 	printf("Usage: ftr info <pkg-name>\n");
 	printf("\n");
 	printf("Show metadata for the highest-version entry of <pkg-name>\n");
-	printf("across every synced repo. Prints nothing on no match.\n");
+	printf("across every synced repo. Exits non-zero if not found.\n");
 }
 
 int cmd_info(int argc, char **argv)
@@ -66,26 +66,33 @@ int cmd_info(int argc, char **argv)
 		}
 	}
 
-	if (best) {
-		printf("Name:        %s\n", best->name);
-		printf("Version:     %s\n", best->version);
-		printf("Repository:  %s\n", best->repo_name);
-		if (best->description) {
-			printf("Description: %s\n", best->description);
-		}
-		if (best->runtime) {
-			printf("Runtime:     %s\n", best->runtime);
-		}
-		if (best->layout) {
-			printf("Layout:      %s\n", best->layout);
-		}
-		printf("Archive:     %s\n", best->archive);
-		if (best->sha256) {
-			printf("SHA-256:     %s\n", best->sha256);
-		}
-		if (best->size >= 0) {
-			printf("Size:        %lld bytes\n", best->size);
-		}
+	if (!best) {
+		/* Querying a package that isn't in any synced index is an error, not a
+		 * no-op — callers (e.g. the installer's device-package gate) rely on a
+		 * non-zero exit to detect "not available". */
+		ftr_repo_indexes_free(idxs, n_idxs);
+		err_log("info: no package named '%s' in any synced repo", name);
+		return 1;
+	}
+
+	printf("Name:        %s\n", best->name);
+	printf("Version:     %s\n", best->version);
+	printf("Repository:  %s\n", best->repo_name);
+	if (best->description) {
+		printf("Description: %s\n", best->description);
+	}
+	if (best->runtime) {
+		printf("Runtime:     %s\n", best->runtime);
+	}
+	if (best->layout) {
+		printf("Layout:      %s\n", best->layout);
+	}
+	printf("Archive:     %s\n", best->archive);
+	if (best->sha256) {
+		printf("SHA-256:     %s\n", best->sha256);
+	}
+	if (best->size >= 0) {
+		printf("Size:        %lld bytes\n", best->size);
 	}
 
 	ftr_repo_indexes_free(idxs, n_idxs);
